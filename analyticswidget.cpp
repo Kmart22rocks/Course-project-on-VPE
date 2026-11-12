@@ -5,6 +5,7 @@
 #include <QPaintEvent>
 
 AnalyticsWidget::AnalyticsWidget(QWidget *parent) : QWidget(parent) {
+    setStyleSheet("font-size: 11.5pt;");
     auto *mainLayout = new QVBoxLayout(this);
 
     auto *topPanel = new QHBoxLayout();
@@ -55,77 +56,95 @@ void AnalyticsWidget::updateCurrencyDisplay(double usdRate, double eurRate, bool
 }
 
 void AnalyticsWidget::paintEvent(QPaintEvent *event) {
-    QWidget::paintEvent(event);
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
+    Q_UNUSED(event);
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
 
-    int topMargin = 60;
-    int bottomMargin = 50;
-    int leftMargin = 70;
-    int rightMargin = 40;
-
-    QRect chartRect(leftMargin, topMargin,
-                    width() - leftMargin - rightMargin,
-                    height() - topMargin - bottomMargin);
-
-    if (chartRect.width() <= 50 || chartRect.height() <= 50) return;
-
-    painter.fillRect(chartRect, QColor(248, 249, 250));
-    painter.setPen(QPen(QColor(200, 200, 200), 1));
-    painter.drawRect(chartRect);
-
-    QFont titleFont = font();
-    titleFont.setBold(true);
-    titleFont.setPointSize(11);
-    painter.setFont(titleFont);
-    painter.setPen(Qt::black);
-    painter.drawText(QRect(leftMargin, topMargin - 28, chartRect.width(), 24),
-                     Qt::AlignCenter,
-                     "Визуализация выручки гостиницы по категориям номеров (руб.)");
-
-    if (m_categoryRevenue.isEmpty()) return;
-
-    double maxRev = 1000.0;
-    for (double val : m_categoryRevenue) {
-        if (val > maxRev) maxRev = val;
+    QRect chartRect = rect().adjusted(20, 65, -20, -20);
+    if (chartRect.height() < 100 || chartRect.width() < 200) {
+        return;
     }
-    maxRev *= 1.15;
+
+    p.setPen(QPen(QColor("#52565e"), 1));
+    p.setBrush(QColor("#3b3e45"));
+    p.drawRoundedRect(chartRect, 8, 8);
+
+    p.setPen(QColor("#e8eaed"));
+    QFont f = font();
+    f.setPointSize(13);
+    f.setBold(true);
+    p.setFont(f);
+    p.drawText(chartRect.adjusted(0, 12, 0, 0),
+               Qt::AlignTop | Qt::AlignHCenter,
+               "Графическая визуализация: Выручка гостиницы по категориям номеров (руб.)");
+
+    if (m_categoryRevenue.isEmpty()) {
+        p.drawText(chartRect, Qt::AlignCenter, "Нет данных для построения диаграммы");
+        return;
+    }
+
+    double maxVal = 0.0;
+    for (double v : m_categoryRevenue) {
+        if (v > maxVal) maxVal = v;
+    }
+    maxVal = (maxVal <= 0.0) ? 10000.0 : qCeil(maxVal / 5000.0) * 5000.0;
+
+    QRect plotArea(chartRect.left() + 85,
+                   chartRect.top() + 55,
+                   chartRect.width() - 115,
+                   chartRect.height() - 105);
+
+    p.setBrush(QColor("#43474f"));
+    p.drawRect(plotArea);
+
+    f.setPointSize(11);
+    p.setFont(f);
+
+    const int gridSteps = 5;
+    for (int i = 0; i <= gridSteps; ++i) {
+        double ratio = static_cast<double>(i) / gridSteps;
+        int y = plotArea.bottom() - qRound(ratio * plotArea.height());
+
+        p.setPen(QPen(QColor("#585d66"), 1, Qt::DashLine));
+        p.drawLine(plotArea.left(), y, plotArea.right(), y);
+
+        p.setPen(QColor("#dcdfe4"));
+        QRect labelRect(chartRect.left() + 5, y - 12, 72, 24);
+        p.drawText(labelRect, Qt::AlignRight | Qt::AlignVCenter,
+                   QString::number(ratio * maxVal, 'f', 0));
+    }
+
+    p.setPen(QPen(QColor("#9aa0a6"), 2));
+    p.drawLine(plotArea.topLeft(), plotArea.bottomLeft());
+    p.drawLine(plotArea.bottomLeft(), plotArea.bottomRight());
 
     int count = m_categoryRevenue.size();
-    int barSpacing = 30;
-    int totalSpacing = barSpacing * (count + 1);
-    int barWidth = qMax(30, (chartRect.width() - totalSpacing) / count);
+    int stepWidth = plotArea.width() / qMax(1, count);
+    int barWidth = qMin(85, qMax(30, stepWidth / 2));
 
-    QList<QColor> colors = {
-        QColor(52, 152, 219),
-        QColor(46, 204, 113),
-        QColor(155, 89, 182),
-        QColor(230, 126, 34)
+    QList<QColor> barColors = {
+        QColor("#5c8bc0"),
+        QColor("#5fa876"),
+        QColor("#d49a45"),
+        QColor("#9b6fb6"),
+        QColor("#4fa3a5")
     };
 
     int idx = 0;
-    QFont labelFont = font();
-    labelFont.setPointSize(9);
-    painter.setFont(labelFont);
-
     for (auto it = m_categoryRevenue.constBegin(); it != m_categoryRevenue.constEnd(); ++it, ++idx) {
-        double value = it.value();
-        int barHeight = static_cast<int>((value / maxRev) * (chartRect.height() - 20));
-        int x = chartRect.left() + barSpacing + idx * (barWidth + barSpacing);
-        int y = chartRect.bottom() - barHeight;
+        int barHeight = qRound((it.value() / maxVal) * (plotArea.height() - 25));
+        int centerX = plotArea.left() + idx * stepWidth + stepWidth / 2;
+        QRect barRect(centerX - barWidth / 2, plotArea.bottom() - barHeight, barWidth, barHeight);
 
-        QRect barRect(x, y, barWidth, barHeight);
-        painter.setBrush(colors[idx % colors.size()]);
-        painter.setPen(Qt::NoPen);
-        painter.drawRoundedRect(barRect, 4, 4);
+        p.setPen(Qt::NoPen);
+        p.setBrush(barColors[idx % barColors.size()]);
+        p.drawRoundedRect(barRect, 4, 4);
 
-        painter.setPen(Qt::black);
-        painter.drawText(QRect(x - 10, y - 22, barWidth + 20, 20),
-                         Qt::AlignCenter,
-                         QString("%1 р.").arg(value, 0, 'f', 0));
+        p.setPen(QColor("#f1f3f4"));
+        p.drawText(QRect(centerX - stepWidth / 2, barRect.top() - 26, stepWidth, 22),
+                   Qt::AlignCenter, QString("%1 руб.").arg(it.value(), 0, 'f', 0));
 
-        painter.drawText(QRect(x - 10, chartRect.bottom() + 6, barWidth + 20, 25),
-                         Qt::AlignCenter,
-                         it.key());
+        p.drawText(QRect(centerX - stepWidth / 2, plotArea.bottom() + 8, stepWidth, 32),
+                   Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, it.key());
     }
 }
