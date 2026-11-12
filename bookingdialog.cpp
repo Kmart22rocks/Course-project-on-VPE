@@ -1,196 +1,375 @@
 #include "bookingdialog.h"
 #include "bookingcalculator.h"
+
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
+#include <QGroupBox>
+#include <QLineEdit>
+#include <QDateEdit>
+#include <QComboBox>
+#include <QListWidget>
+#include <QLabel>
 #include <QPushButton>
 #include <QMessageBox>
+#include <QSignalBlocker>
+#include <QTableWidget>
+#include <QHeaderView>
 
 BookingDialog::BookingDialog(DBManager *db,
                              CurrencyApiClient *apiClient,
                              QWidget *parent,
-                             int bookingIdToEdit)
+                             int preselectedRoomId)
     : QDialog(parent),
       m_db(db),
       m_apiClient(apiClient),
-      m_bookingIdToEdit(bookingIdToEdit) {
-    setupUI();
-    loadData();
-    if (m_bookingIdToEdit > 0) {
-        setWindowTitle("Редактирование бронирования");
-    } else {
-        setWindowTitle("Новое бронирование");
-    }
-
-    if (m_apiClient) {
-        connect(m_apiClient, &CurrencyApiClient::ratesUpdated, this, [this]() {
-            calculateTotal();
-        });
-    }
+      m_preselectedRoomId(preselectedRoomId) {
+    setWindowTitle("Оформление бронирования");
+    setMinimumWidth(520);
+    setupUi();
+    loadExistingGuests();
+    loadServices();
+    updateAvailableRooms();
 }
 
-void BookingDialog::setupUI() {
-    setMinimumWidth(480);
+void BookingDialog::setupUi() {
     auto *mainLayout = new QVBoxLayout(this);
-    auto *formLayout = new QFormLayout();
 
+    // 1. Карточка гостя с выбором из базы и историей
+    auto *guestGroup = new QGroupBox("Данные гостя", this);
+    auto *guestGroupLayout = new QVBoxLayout(guestGroup);
+    auto *guestForm = new QFormLayout();
+
+    m_existingGuestCombo = new QComboBox(this);
     m_nameEdit = new QLineEdit(this);
-    m_passportEdit = new QLineEdit(this);
-    m_phoneEdit = new QLineEdit(this);
+    m_nameEdit->setPlaceholderText("Иванов Иван Иванович");
 
-    formLayout->addRow("ФИО гостя:", m_nameEdit);
-    formLayout->addRow("Паспорт:", m_passportEdit);
-    formLayout->addRow("Телефон:", m_phoneEdit);
+    m_passportEdit = new QLineEdit(this);
+    m_passportEdit->setPlaceholderText("1234 567890");
+
+    m_phoneEdit = new QLineEdit(this);
+    m_phoneEdit->setPlaceholderText("+7 (900) 000-00-00");
+
+    guestForm->addRow("Выбрать гостя из БД:", m_existingGuestCombo);
+    guestForm->addRow("ФИО гостя:", m_nameEdit);
+    guestForm->addRow("Паспорт:", m_passportEdit);
+    guestForm->addRow("Телефон:", m_phoneEdit);
+    guestGroupLayout->addLayout(guestForm);
+
+    m_guestHistoryLabel = new QLabel("Статус: новый гость (ранее не бронировал)", this);
+    m_guestHistoryLabel->setWordWrap(true);
+    m_guestHistoryLabel->setStyleSheet("color: #666666; font-style: italic; margin-top: 4px;");
+    guestGroupLayout->addWidget(m_guestHistoryLabel);
+
+    m_historyBtn = new QPushButton("Посмотреть полную историю проживаний гостя", this);
+    m_historyBtn->setEnabled(false);
+    guestGroupLayout->addWidget(m_historyBtn);
+
+    mainLayout->addWidget(guestGroup);
+
+    // 2. Параметры размещения
+    auto *stayGroup = new QGroupBox("Параметры размещения", this);
+    auto *stayForm = new QFormLayout(stayGroup);
 
     m_checkInEdit = new QDateEdit(QDate::currentDate(), this);
     m_checkInEdit->setCalendarPopup(true);
-    m_checkInEdit->setMinimumDate(QDate::currentDate());
+    m_checkInEdit->setDisplayFormat("dd.MM.yyyy");
 
     m_checkOutEdit = new QDateEdit(QDate::currentDate().addDays(1), this);
     m_checkOutEdit->setCalendarPopup(true);
-    m_checkOutEdit->setMinimumDate(QDate::currentDate().addDays(1));
-
-    formLayout->addRow("Дата заезда:", m_checkInEdit);
-    formLayout->addRow("Дата выезда:", m_checkOutEdit);
+    m_checkOutEdit->setDisplayFormat("dd.MM.yyyy");
 
     m_roomCombo = new QComboBox(this);
-    formLayout->addRow("Номер:", m_roomCombo);
 
+    stayForm->addRow("Дата заезда:", m_checkInEdit);
+    stayForm->addRow("Дата выезда:", m_checkOutEdit);
+    stayForm->addRow("Доступный номер:", m_roomCombo);
+    mainLayout->addWidget(stayGroup);
+
+    // 3. Дополнительные услуги
+    auto *servicesGroup = new QGroupBox("Дополнительные услуги", this);
+    auto *servicesLayout = new QVBoxLayout(servicesGroup);
     m_servicesList = new QListWidget(this);
-    m_servicesList->setMaximumHeight(120);
-    formLayout->addRow("Услуги:", m_servicesList);
+    m_servicesList->setMaximumHeight(130);
+    servicesLayout->addWidget(m_servicesList);
+    mainLayout->addWidget(servicesGroup);
 
-    m_totalLabel = new QLabel("Итого: 0.00 руб.", this);
-    QFont font = m_totalLabel->font();
-    font.setBold(true);
-    font.setPointSize(10);
-    m_totalLabel->setFont(font);
-    formLayout->addRow("Стоимость:", m_totalLabel);
+    // 4. Итоговая стоимость
+    m_totalLabel = new QLabel("Итого к оплате: 0.00 руб.", this);
+    m_totalLabel->setStyleSheet("font-size: 13pt; font-weight: bold; color: #1b5e20; margin: 6px 0;");
+    m_totalLabel->setWordWrap(true);
+    mainLayout->addWidget(m_totalLabel);
 
-    mainLayout->addLayout(formLayout);
-
+    // 5. Кнопки подтверждения
     auto *btnLayout = new QHBoxLayout();
-    auto *saveBtn = new QPushButton("Сохранить", this);
-    auto *cancelBtn = new QPushButton("Отмена", this);
     btnLayout->addStretch();
-    btnLayout->addWidget(saveBtn);
+    auto *okBtn = new QPushButton("Подтвердить бронирование", this);
+    auto *cancelBtn = new QPushButton("Отмена", this);
+    btnLayout->addWidget(okBtn);
     btnLayout->addWidget(cancelBtn);
     mainLayout->addLayout(btnLayout);
 
-    connect(saveBtn, &QPushButton::clicked, this, &BookingDialog::validateAndAccept);
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+    // Подключение сигналов выбора гостя и истории
+    connect(m_existingGuestCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &BookingDialog::onExistingGuestSelected);
+    connect(m_passportEdit, &QLineEdit::textEdited,
+            this, &BookingDialog::onPassportEdited);
+    connect(m_historyBtn, &QPushButton::clicked,
+            this, &BookingDialog::onShowGuestHistory);
 
-    connect(m_checkInEdit, &QDateEdit::dateChanged, this, [this](const QDate &d){
-        m_checkOutEdit->setMinimumDate(d.addDays(1));
-        updateAvailableRooms();
-        calculateTotal();
-    });
-    connect(m_checkOutEdit, &QDateEdit::dateChanged, this, [this](){
-        updateAvailableRooms();
-        calculateTotal();
-    });
-    connect(m_roomCombo, &QComboBox::currentIndexChanged,
+    // Подключение сигналов расчёта дат и стоимости
+    connect(m_checkInEdit, &QDateEdit::dateChanged, this, &BookingDialog::onDatesChanged);
+    connect(m_checkOutEdit, &QDateEdit::dateChanged, this, &BookingDialog::onDatesChanged);
+    connect(m_roomCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &BookingDialog::calculateTotal);
     connect(m_servicesList, &QListWidget::itemChanged,
             this, &BookingDialog::calculateTotal);
+
+    connect(okBtn, &QPushButton::clicked, this, &BookingDialog::validateAndAccept);
+    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
 }
 
-void BookingDialog::loadData() {
-    m_allServices = m_db->getAllServices();
-    for (const auto &s : m_allServices) {
-        auto *item = new QListWidgetItem(
-            QString("%1 (%2 руб.)").arg(s.name).arg(s.price, 0, 'f', 2), m_servicesList
-        );
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(Qt::Unchecked);
-        item->setData(Qt::UserRole, s.id);
+void BookingDialog::loadExistingGuests() {
+    QSignalBlocker blocker(m_existingGuestCombo);
+    m_existingGuestCombo->clear();
+    m_existingGuestCombo->addItem("-- Новый гость (ввести вручную) --", -1);
+
+    if (!m_db) return;
+    m_guests = m_db->getAllGuests();
+    for (const Guest &g : m_guests) {
+        QString itemText = QString("%1 (паспорт: %2)").arg(g.fullName, g.passport);
+        m_existingGuestCombo->addItem(itemText, g.id);
+    }
+}
+
+void BookingDialog::onExistingGuestSelected(int index) {
+    if (index < 0) return;
+
+    int guestId = m_existingGuestCombo->itemData(index).toInt();
+    if (guestId <= 0) {
+        QSignalBlocker passBlocker(m_passportEdit);
+        m_nameEdit->clear();
+        m_passportEdit->clear();
+        m_phoneEdit->clear();
+        updateGuestHistoryPreview(-1);
+        return;
     }
 
-    if (m_bookingIdToEdit > 0) {
-        m_currentBooking = m_db->getBookingById(m_bookingIdToEdit);
-        QList<Guest> guests = m_db->getAllGuests();
-        for (const auto &g : guests) {
-            if (g.id == m_currentBooking.guestId) {
-                m_nameEdit->setText(g.fullName);
-                m_passportEdit->setText(g.passport);
-                m_phoneEdit->setText(g.phone);
-                break;
-            }
+    for (const Guest &g : m_guests) {
+        if (g.id == guestId) {
+            QSignalBlocker passBlocker(m_passportEdit);
+            m_nameEdit->setText(g.fullName);
+            m_passportEdit->setText(g.passport);
+            m_phoneEdit->setText(g.phone);
+            updateGuestHistoryPreview(g.id);
+            break;
         }
-        m_checkInEdit->setDate(m_currentBooking.checkIn);
-        m_checkOutEdit->setDate(m_currentBooking.checkOut);
+    }
+}
 
-        updateAvailableRooms();
+void BookingDialog::onPassportEdited(const QString &passportText) {
+    QString trimmed = passportText.trimmed();
+    if (trimmed.isEmpty()) {
+        QSignalBlocker comboBlocker(m_existingGuestCombo);
+        m_existingGuestCombo->setCurrentIndex(0);
+        updateGuestHistoryPreview(-1);
+        return;
+    }
 
-        for (int i = 0; i < m_roomCombo->count(); ++i) {
-            if (m_roomCombo->itemData(i).toInt() == m_currentBooking.roomId) {
-                m_roomCombo->setCurrentIndex(i);
-                break;
+    for (const Guest &g : m_guests) {
+        if (g.passport.compare(trimmed, Qt::CaseInsensitive) == 0) {
+            QSignalBlocker comboBlocker(m_existingGuestCombo);
+            int idx = m_existingGuestCombo->findData(g.id);
+            if (idx >= 0) {
+                m_existingGuestCombo->setCurrentIndex(idx);
             }
+            m_nameEdit->setText(g.fullName);
+            m_phoneEdit->setText(g.phone);
+            updateGuestHistoryPreview(g.id);
+            return;
         }
+    }
 
-        for (int i = 0; i < m_servicesList->count(); ++i) {
-            auto *item = m_servicesList->item(i);
-            int sid = item->data(Qt::UserRole).toInt();
-            if (m_currentBooking.serviceIds.contains(sid)) {
-                item->setCheckState(Qt::Checked);
-            }
-        }
+    QSignalBlocker comboBlocker(m_existingGuestCombo);
+    m_existingGuestCombo->setCurrentIndex(0);
+    updateGuestHistoryPreview(-1);
+}
+
+void BookingDialog::updateGuestHistoryPreview(int guestId) {
+    m_selectedGuestId = guestId;
+
+    if (guestId <= 0 || !m_db) {
+        m_guestHistoryLabel->setText("Статус: новый гость (ранее не бронировал)");
+        m_guestHistoryLabel->setStyleSheet("color: #666666; font-style: italic; margin-top: 4px;");
+        m_historyBtn->setEnabled(false);
+        return;
+    }
+
+    QList<Booking> history = m_db->getGuestHistory(guestId);
+    GuestStats stats = BookingCalculator::calculateGuestStats(history);
+
+    if (history.isEmpty()) {
+        m_guestHistoryLabel->setText("Гость зарегистрирован в базе, но прошлых бронирований нет.");
     } else {
-        updateAvailableRooms();
+        const Booking &last = history.first();
+        QString text = QString(
+            "История гостя: всего броней — %1 (проживаний: %2), на сумму — %3 руб.\n"
+            "Последний визит: комната №%4 (%5 — %6, статус: %7)")
+            .arg(stats.totalBookings)
+            .arg(stats.activeOrCompletedVisits)
+            .arg(stats.totalSpent, 0, 'f', 2)
+            .arg(last.roomNumber)
+            .arg(last.checkIn.toString("dd.MM.yyyy"))
+            .arg(last.checkOut.toString("dd.MM.yyyy"))
+            .arg(last.status);
+        m_guestHistoryLabel->setText(text);
     }
-    calculateTotal();
+
+    m_guestHistoryLabel->setStyleSheet("color: #1b5e20; font-weight: bold; margin-top: 4px;");
+    m_historyBtn->setEnabled(true);
+}
+
+void BookingDialog::onShowGuestHistory() {
+    if (m_selectedGuestId <= 0 || !m_db) return;
+
+    QList<Booking> history = m_db->getGuestHistory(m_selectedGuestId);
+    GuestStats stats = BookingCalculator::calculateGuestStats(history);
+
+    QDialog dlg(this);
+    dlg.setWindowTitle("История бронирований: " + m_nameEdit->text().trimmed());
+    dlg.resize(680, 400);
+
+    auto *layout = new QVBoxLayout(&dlg);
+    auto *summaryLabel = new QLabel(
+        QString("Всего бронирований: %1 | Активных/завершённых визитов: %2 | Общая сумма: %3 руб.")
+            .arg(stats.totalBookings)
+            .arg(stats.activeOrCompletedVisits)
+            .arg(stats.totalSpent, 0, 'f', 2),
+        &dlg);
+    summaryLabel->setStyleSheet("font-weight: bold; font-size: 10.5pt; margin-bottom: 6px;");
+    layout->addWidget(summaryLabel);
+
+    auto *table = new QTableWidget(&dlg);
+    table->setColumnCount(6);
+    table->setHorizontalHeaderLabels({"ID", "Номер", "Дата заезда", "Дата выезда", "Стоимость (руб.)", "Статус"});
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setRowCount(history.size());
+
+    for (int i = 0; i < history.size(); ++i) {
+        const Booking &b = history[i];
+        table->setItem(i, 0, new QTableWidgetItem(QString::number(b.id)));
+        table->setItem(i, 1, new QTableWidgetItem(QString("%1").arg(b.roomNumber)));
+        table->setItem(i, 2, new QTableWidgetItem(b.checkIn.toString("dd.MM.yyyy")));
+        table->setItem(i, 3, new QTableWidgetItem(b.checkOut.toString("dd.MM.yyyy")));
+        table->setItem(i, 4, new QTableWidgetItem(QString::number(b.totalCost, 'f', 2)));
+        table->setItem(i, 5, new QTableWidgetItem(b.status));
+    }
+    layout->addWidget(table);
+
+    auto *closeBtn = new QPushButton("Закрыть", &dlg);
+    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    layout->addWidget(closeBtn);
+
+    dlg.exec();
+}
+
+void BookingDialog::loadServices() {
+    m_servicesList->clear();
+    if (!m_db) return;
+
+    m_allServices = m_db->getAllServices();
+    for (const Service &s : m_allServices) {
+        auto *item = new QListWidgetItem(
+            QString("%1 — %2 руб.").arg(s.name).arg(s.price, 0, 'f', 2),
+            m_servicesList);
+        item->setData(Qt::UserRole, s.id);
+        item->setCheckState(Qt::Unchecked);
+    }
+}
+
+void BookingDialog::onDatesChanged() {
+    if (m_checkOutEdit->date() <= m_checkInEdit->date()) {
+        m_checkOutEdit->setDate(m_checkInEdit->date().addDays(1));
+    }
+    updateAvailableRooms();
 }
 
 void BookingDialog::updateAvailableRooms() {
     m_roomCombo->clear();
-    m_availableRooms = m_db->getAvailableRoomsForDates(
-        m_checkInEdit->date(), m_checkOutEdit->date(), m_bookingIdToEdit
-    );
-    for (const auto &r : m_availableRooms) {
-        m_roomCombo->addItem(
-            QString("№%1 (%2) - %3 руб./ночь").arg(r.roomNumber).arg(r.type).arg(r.pricePerNight, 0, 'f', 2),
-            r.id
-        );
-    }
-}
+    if (!m_db) return;
 
-QList<int> BookingDialog::getSelectedServiceIds() const {
-    QList<int> selected;
-    for (int i = 0; i < m_servicesList->count(); ++i) {
-        auto *item = m_servicesList->item(i);
-        if (item->checkState() == Qt::Checked) {
-            selected.append(item->data(Qt::UserRole).toInt());
+    QDate checkIn = m_checkInEdit->date();
+    QDate checkOut = m_checkOutEdit->date();
+
+    QList<Room> rooms = m_db->getAllRooms();
+    QList<Booking> bookings = m_db->getAllBookings();
+    int preselectedIdx = -1;
+
+    for (const Room &r : rooms) {
+        if (r.status == "На ремонте") {
+            continue;
+        }
+
+        bool available = true;
+        for (const Booking &b : bookings) {
+            if (b.roomId == r.id && b.status != "Отменено" && b.status != "Завершено") {
+                if (b.checkIn < checkOut && b.checkOut > checkIn) {
+                    available = false;
+                    break;
+                }
+            }
+        }
+
+        if (available) {
+            QString text = QString("№%1 | %2 | %3 руб./сут.")
+                               .arg(r.roomNumber)
+                               .arg(r.type)
+                               .arg(r.pricePerNight, 0, 'f', 0);
+            m_roomCombo->addItem(text, r.id);
+            int idx = m_roomCombo->count() - 1;
+            m_roomCombo->setItemData(idx, r.pricePerNight, Qt::UserRole + 1);
+            m_roomCombo->setItemData(idx, r.roomNumber, Qt::UserRole + 2);
+
+            if (r.id == m_preselectedRoomId) {
+                preselectedIdx = idx;
+            }
         }
     }
-    return selected;
-}
 
-double BookingDialog::getSelectedRoomPrice() const {
-    if (m_roomCombo->currentIndex() < 0) return 0.0;
-    int roomId = m_roomCombo->currentData().toInt();
-    for (const auto &r : m_availableRooms) {
-        if (r.id == roomId) {
-            return r.pricePerNight;
-        }
+    if (m_roomCombo->count() == 0) {
+        m_roomCombo->addItem("Нет свободных номеров на выбранные даты", -1);
+    } else if (preselectedIdx >= 0) {
+        m_roomCombo->setCurrentIndex(preselectedIdx);
     }
-    return 0.0;
+
+    calculateTotal();
 }
 
 void BookingDialog::calculateTotal() {
-    if (m_roomCombo->currentIndex() < 0) {
-        m_totalLabel->setText("Итого: 0.00 руб.");
+    int roomId = m_roomCombo->currentData().toInt();
+    if (roomId <= 0) {
+        m_totalLabel->setText("Итого к оплате: 0.00 руб. (нет свободных номеров)");
         return;
+    }
+
+    double pricePerNight = m_roomCombo->currentData(Qt::UserRole + 1).toDouble();
+    QList<int> selectedServiceIds;
+    for (int i = 0; i < m_servicesList->count(); ++i) {
+        auto *item = m_servicesList->item(i);
+        if (item->checkState() == Qt::Checked) {
+            selectedServiceIds.append(item->data(Qt::UserRole).toInt());
+        }
     }
 
     int nights = BookingCalculator::calculateNights(m_checkInEdit->date(), m_checkOutEdit->date());
     double totalRub = BookingCalculator::calculateTotalCost(
         m_checkInEdit->date(),
         m_checkOutEdit->date(),
-        getSelectedRoomPrice(),
-        getSelectedServiceIds(),
-        m_allServices
-    );
+        pricePerNight,
+        selectedServiceIds,
+        m_allServices);
 
     double usdRate = m_apiClient ? m_apiClient->usdRate() : 90.0;
     double eurRate = m_apiClient ? m_apiClient->eurRate() : 98.0;
@@ -198,47 +377,63 @@ void BookingDialog::calculateTotal() {
     double totalEur = BookingCalculator::convertCurrency(totalRub, eurRate);
 
     m_totalLabel->setText(
-        QString("%1 руб. (Ночей: %2) | ~$%3 | ~€%4")
-            .arg(totalRub, 0, 'f', 2)
+        QString("Итого за %1 сут.: %2 руб.  (~$%3 / ~€%4)")
             .arg(nights)
+            .arg(totalRub, 0, 'f', 2)
             .arg(totalUsd, 0, 'f', 2)
-            .arg(totalEur, 0, 'f', 2)
-    );
+            .arg(totalEur, 0, 'f', 2));
 }
 
 void BookingDialog::validateAndAccept() {
     if (m_nameEdit->text().trimmed().isEmpty() ||
         m_passportEdit->text().trimmed().isEmpty() ||
         m_phoneEdit->text().trimmed().isEmpty()) {
-        QMessageBox::warning(this, "Предупреждение", "Заполните все данные о госте!");
+        QMessageBox::warning(this, "Внимание", "Пожалуйста, заполните все данные гостя (ФИО, паспорт, телефон).");
         return;
     }
 
-    if (m_roomCombo->currentIndex() < 0) {
-        QMessageBox::warning(this, "Предупреждение", "Нет доступных номеров на выбранные даты!");
+    int roomId = m_roomCombo->currentData().toInt();
+    if (roomId <= 0) {
+        QMessageBox::warning(this, "Внимание", "На выбранные даты нет доступного номера.");
         return;
     }
 
     accept();
 }
 
-Booking BookingDialog::getBookingData() const {
-    Booking b = m_currentBooking;
+Guest BookingDialog::getGuestData() const {
     Guest g;
+    g.id = m_selectedGuestId;
     g.fullName = m_nameEdit->text().trimmed();
     g.passport = m_passportEdit->text().trimmed();
     g.phone = m_phoneEdit->text().trimmed();
+    return g;
+}
 
-    b.guestId = m_db->addOrGetGuest(g);
-    b.guestName = g.fullName;
+Booking BookingDialog::getBookingData() const {
+    Booking b;
+    b.guestId = m_selectedGuestId;
     b.roomId = m_roomCombo->currentData().toInt();
+    b.roomNumber = m_roomCombo->currentData(Qt::UserRole + 2).toInt();
+    b.guestName = m_nameEdit->text().trimmed();
     b.checkIn = m_checkInEdit->date();
     b.checkOut = m_checkOutEdit->date();
     b.status = BookingCalculator::determineBookingStatus(b.checkIn);
-    b.serviceIds = getSelectedServiceIds();
+
+    double pricePerNight = m_roomCombo->currentData(Qt::UserRole + 1).toDouble();
+    for (int i = 0; i < m_servicesList->count(); ++i) {
+        auto *item = m_servicesList->item(i);
+        if (item->checkState() == Qt::Checked) {
+            b.serviceIds.append(item->data(Qt::UserRole).toInt());
+        }
+    }
+
     b.totalCost = BookingCalculator::calculateTotalCost(
-        b.checkIn, b.checkOut, getSelectedRoomPrice(), b.serviceIds, m_allServices
-    );
+        b.checkIn,
+        b.checkOut,
+        pricePerNight,
+        b.serviceIds,
+        m_allServices);
 
     return b;
 }

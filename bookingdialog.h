@@ -2,51 +2,62 @@
 #define BOOKINGDIALOG_H
 
 #include <QDialog>
-#include <QDateEdit>
-#include <QComboBox>
-#include <QLineEdit>
-#include <QLabel>
-#include <QListWidget>
 #include "dbmanager.h"
 #include "currencyapiclient.h"
-#include "models.h"
+
+class QLineEdit;
+class QDateEdit;
+class QComboBox;
+class QListWidget;
+class QLabel;
+class QPushButton;
 
 class BookingDialog : public QDialog {
     Q_OBJECT
 public:
     explicit BookingDialog(DBManager *db,
-                           CurrencyApiClient *apiClient,
+                           CurrencyApiClient *apiClient = nullptr,
                            QWidget *parent = nullptr,
-                           int bookingIdToEdit = 0);
+                           int preselectedRoomId = -1);
+
+    Guest getGuestData() const;
     Booking getBookingData() const;
 
 private slots:
+    void onExistingGuestSelected(int index);
+    void onPassportEdited(const QString &passportText);
+    void onShowGuestHistory();
+    void onDatesChanged();
     void updateAvailableRooms();
     void calculateTotal();
     void validateAndAccept();
 
 private:
-    void setupUI();
-    void loadData();
-    QList<int> getSelectedServiceIds() const;
-    double getSelectedRoomPrice() const;
-
     DBManager *m_db;
     CurrencyApiClient *m_apiClient;
-    int m_bookingIdToEdit;
-    Booking m_currentBooking;
+    int m_preselectedRoomId;
 
+    QList<Guest> m_guests;
+    QList<Service> m_allServices;
+    int m_selectedGuestId = -1;
+
+    QComboBox *m_existingGuestCombo;
     QLineEdit *m_nameEdit;
     QLineEdit *m_passportEdit;
     QLineEdit *m_phoneEdit;
+    QLabel *m_guestHistoryLabel;
+    QPushButton *m_historyBtn;
+
     QDateEdit *m_checkInEdit;
     QDateEdit *m_checkOutEdit;
     QComboBox *m_roomCombo;
     QListWidget *m_servicesList;
     QLabel *m_totalLabel;
 
-    QList<Room> m_availableRooms;
-    QList<Service> m_allServices;
+    void setupUi();
+    void loadExistingGuests();
+    void loadServices();
+    void updateGuestHistoryPreview(int guestId);
 };
 
 #endif // BOOKINGDIALOG_H
