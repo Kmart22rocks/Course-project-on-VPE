@@ -15,27 +15,30 @@
 #include <QSignalBlocker>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QSqlQuery>
 
 BookingDialog::BookingDialog(DBManager *db,
                              CurrencyApiClient *apiClient,
                              QWidget *parent,
-                             int preselectedRoomId)
+                             int editBookingId)
     : QDialog(parent),
       m_db(db),
       m_apiClient(apiClient),
-      m_preselectedRoomId(preselectedRoomId) {
-    setWindowTitle("Оформление бронирования");
+      m_editBookingId(editBookingId) {
+    setWindowTitle(m_editBookingId > 0 ? "Редактирование бронирования" : "Оформление бронирования");
     setMinimumWidth(520);
     setupUi();
     loadExistingGuests();
     loadServices();
+    if (m_editBookingId > 0) {
+        loadBookingForEdit();
+    }
     updateAvailableRooms();
 }
 
 void BookingDialog::setupUi() {
     auto *mainLayout = new QVBoxLayout(this);
 
-    // 1. Карточка гостя с выбором из базы и историей
     auto *guestGroup = new QGroupBox("Данные гостя", this);
     auto *guestGroupLayout = new QVBoxLayout(guestGroup);
     auto *guestForm = new QFormLayout();
@@ -58,7 +61,7 @@ void BookingDialog::setupUi() {
 
     m_guestHistoryLabel = new QLabel("Статус: новый гость (ранее не бронировал)", this);
     m_guestHistoryLabel->setWordWrap(true);
-    m_guestHistoryLabel->setStyleSheet("color: #666666; font-style: italic; margin-top: 4px;");
+    m_guestHistoryLabel->setStyleSheet("color: #9aa0ac; font-style: italic; margin-top: 4px;");
     guestGroupLayout->addWidget(m_guestHistoryLabel);
 
     m_historyBtn = new QPushButton("Посмотреть полную историю проживаний гостя", this);
@@ -67,7 +70,6 @@ void BookingDialog::setupUi() {
 
     mainLayout->addWidget(guestGroup);
 
-    // 2. Параметры размещения
     auto *stayGroup = new QGroupBox("Параметры размещения", this);
     auto *stayForm = new QFormLayout(stayGroup);
 
@@ -86,7 +88,6 @@ void BookingDialog::setupUi() {
     stayForm->addRow("Доступный номер:", m_roomCombo);
     mainLayout->addWidget(stayGroup);
 
-    // 3. Дополнительные услуги
     auto *servicesGroup = new QGroupBox("Дополнительные услуги", this);
     auto *servicesLayout = new QVBoxLayout(servicesGroup);
     m_servicesList = new QListWidget(this);
@@ -94,22 +95,19 @@ void BookingDialog::setupUi() {
     servicesLayout->addWidget(m_servicesList);
     mainLayout->addWidget(servicesGroup);
 
-    // 4. Итоговая стоимость
     m_totalLabel = new QLabel("Итого к оплате: 0.00 руб.", this);
-    m_totalLabel->setStyleSheet("font-size: 13pt; font-weight: bold; color: #1b5e20; margin: 6px 0;");
+    m_totalLabel->setStyleSheet("font-size: 13pt; font-weight: bold; color: #8ad4a4; margin: 6px 0;");
     m_totalLabel->setWordWrap(true);
     mainLayout->addWidget(m_totalLabel);
 
-    // 5. Кнопки подтверждения
     auto *btnLayout = new QHBoxLayout();
     btnLayout->addStretch();
-    auto *okBtn = new QPushButton("Подтвердить бронирование", this);
+    auto *okBtn = new QPushButton(m_editBookingId > 0 ? "Сохранить изменения" : "Подтвердить бронирование", this);
     auto *cancelBtn = new QPushButton("Отмена", this);
     btnLayout->addWidget(okBtn);
     btnLayout->addWidget(cancelBtn);
     mainLayout->addLayout(btnLayout);
 
-    // Подключение сигналов выбора гостя и истории
     connect(m_existingGuestCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &BookingDialog::onExistingGuestSelected);
     connect(m_passportEdit, &QLineEdit::textEdited,
@@ -117,7 +115,6 @@ void BookingDialog::setupUi() {
     connect(m_historyBtn, &QPushButton::clicked,
             this, &BookingDialog::onShowGuestHistory);
 
-    // Подключение сигналов расчёта дат и стоимости
     connect(m_checkInEdit, &QDateEdit::dateChanged, this, &BookingDialog::onDatesChanged);
     connect(m_checkOutEdit, &QDateEdit::dateChanged, this, &BookingDialog::onDatesChanged);
     connect(m_roomCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -139,6 +136,49 @@ void BookingDialog::loadExistingGuests() {
     for (const Guest &g : m_guests) {
         QString itemText = QString("%1 (паспорт: %2)").arg(g.fullName, g.passport);
         m_existingGuestCombo->addItem(itemText, g.id);
+    }
+}
+
+void BookingDialog::loadBookingForEdit() {
+    if (!m_db || m_editBookingId <= 0) return;
+
+    QList<Booking> bookings = m_db->getAllBookings();
+    for (const Booking &b : bookings) {
+        if (b.id == m_editBookingId) {
+            m_targetRoomId = b.roomId;
+
+            int guestIdx = m_existingGuestCombo->findData(b.guestId);
+            if (guestIdx >= 0) {
+                m_existingGuestCombo->setCurrentIndex(guestIdx);
+            }
+
+            {
+                QSignalBlocker b1(m_checkInEdit);
+                QSignalBlocker b2(m_checkOutEdit);
+                m_checkInEdit->setDate(b.checkIn);
+                m_checkOutEdit->setDate(b.checkOut);
+            }
+
+            QList<int> sIds = b.serviceIds;
+            if (sIds.isEmpty()) {
+                QSqlQuery q;
+                q.prepare("SELECT service_id FROM booking_services WHERE booking_id = :bid");
+                q.bindValue(":bid", m_editBookingId);
+                if (q.exec()) {
+                    while (q.next()) {
+                        sIds.append(q.value(0).toInt());
+                    }
+                }
+            }
+
+            QSignalBlocker b3(m_servicesList);
+            for (int i = 0; i < m_servicesList->count(); ++i) {
+                auto *item = m_servicesList->item(i);
+                int sid = item->data(Qt::UserRole).toInt();
+                item->setCheckState(sIds.contains(sid) ? Qt::Checked : Qt::Unchecked);
+            }
+            break;
+        }
     }
 }
 
@@ -200,7 +240,7 @@ void BookingDialog::updateGuestHistoryPreview(int guestId) {
 
     if (guestId <= 0 || !m_db) {
         m_guestHistoryLabel->setText("Статус: новый гость (ранее не бронировал)");
-        m_guestHistoryLabel->setStyleSheet("color: #666666; font-style: italic; margin-top: 4px;");
+        m_guestHistoryLabel->setStyleSheet("color: #9aa0ac; font-style: italic; margin-top: 4px;");
         m_historyBtn->setEnabled(false);
         return;
     }
@@ -225,7 +265,7 @@ void BookingDialog::updateGuestHistoryPreview(int guestId) {
         m_guestHistoryLabel->setText(text);
     }
 
-    m_guestHistoryLabel->setStyleSheet("color: #1b5e20; font-weight: bold; margin-top: 4px;");
+    m_guestHistoryLabel->setStyleSheet("color: #8ad4a4; font-weight: bold; margin-top: 4px;");
     m_historyBtn->setEnabled(true);
 }
 
@@ -297,6 +337,10 @@ void BookingDialog::onDatesChanged() {
 }
 
 void BookingDialog::updateAvailableRooms() {
+    if (m_roomCombo->count() > 0 && m_roomCombo->currentData().toInt() > 0) {
+        m_targetRoomId = m_roomCombo->currentData().toInt();
+    }
+
     m_roomCombo->clear();
     if (!m_db) return;
 
@@ -308,12 +352,15 @@ void BookingDialog::updateAvailableRooms() {
     int preselectedIdx = -1;
 
     for (const Room &r : rooms) {
-        if (r.status == "На ремонте") {
+        if (r.status == "На ремонте" && r.id != m_targetRoomId) {
             continue;
         }
 
         bool available = true;
         for (const Booking &b : bookings) {
+            if (b.id == m_editBookingId) {
+                continue;
+            }
             if (b.roomId == r.id && b.status != "Отменено" && b.status != "Завершено") {
                 if (b.checkIn < checkOut && b.checkOut > checkIn) {
                     available = false;
@@ -332,7 +379,7 @@ void BookingDialog::updateAvailableRooms() {
             m_roomCombo->setItemData(idx, r.pricePerNight, Qt::UserRole + 1);
             m_roomCombo->setItemData(idx, r.roomNumber, Qt::UserRole + 2);
 
-            if (r.id == m_preselectedRoomId) {
+            if (r.id == m_targetRoomId) {
                 preselectedIdx = idx;
             }
         }
@@ -412,6 +459,7 @@ Guest BookingDialog::getGuestData() const {
 
 Booking BookingDialog::getBookingData() const {
     Booking b;
+    b.id = m_editBookingId;
     b.guestId = m_selectedGuestId;
     b.roomId = m_roomCombo->currentData().toInt();
     b.roomNumber = m_roomCombo->currentData(Qt::UserRole + 2).toInt();

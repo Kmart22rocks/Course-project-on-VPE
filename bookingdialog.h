@@ -18,7 +18,7 @@ public:
     explicit BookingDialog(DBManager *db,
                            CurrencyApiClient *apiClient = nullptr,
                            QWidget *parent = nullptr,
-                           int preselectedRoomId = -1);
+                           int editBookingId = -1);
 
     Guest getGuestData() const;
     Booking getBookingData() const;
@@ -35,7 +35,8 @@ private slots:
 private:
     DBManager *m_db;
     CurrencyApiClient *m_apiClient;
-    int m_preselectedRoomId;
+    int m_editBookingId;
+    int m_targetRoomId = -1;
 
     QList<Guest> m_guests;
     QList<Service> m_allServices;
@@ -57,7 +58,8 @@ private:
     void setupUi();
     void loadExistingGuests();
     void loadServices();
+    void loadBookingForEdit();
     void updateGuestHistoryPreview(int guestId);
 };
 
-#endif // BOOKINGDIALOG_H
+#endif
