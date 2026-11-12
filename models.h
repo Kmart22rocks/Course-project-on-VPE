@@ -4,8 +4,8 @@
 #include <QString>
 #include <QDate>
 #include <QList>
+#include <QMap>
 
-// Модель гостя
 struct Guest {
     int id = 0;
     QString fullName;
@@ -13,23 +13,20 @@ struct Guest {
     QString phone;
 };
 
-// Модель гостиничного номера
 struct Room {
     int id = 0;
     int roomNumber = 0;
     QString type;
-    QString status;
     double pricePerNight = 0.0;
+    QString status;
 };
 
-// Модель дополнительной услуги
 struct Service {
     int id = 0;
     QString name;
     double price = 0.0;
 };
 
-// Модель бронирования
 struct Booking {
     int id = 0;
     int guestId = 0;
@@ -41,6 +38,12 @@ struct Booking {
     QString guestName;
     double totalCost = 0.0;
     QList<int> serviceIds;
+};
+
+struct GuestStats {
+    int totalBookings = 0;
+    int activeOrCompletedVisits = 0;
+    double totalSpent = 0.0;
 };
 
 #endif // MODELS_H

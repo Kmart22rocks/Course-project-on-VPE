@@ -3,34 +3,31 @@
 
 #include <QObject>
 #include <QSqlDatabase>
+#include <QList>
 #include "models.h"
 
 class DBManager : public QObject {
     Q_OBJECT
-
 public:
-    static DBManager& instance();
+    explicit DBManager(QObject *parent = nullptr);
+    ~DBManager() override;
 
-    bool openDatabase();
+    bool openDatabase(const QString &path = "hotel_management.db");
 
-    // Операции с номерами
     QList<Room> getAllRooms();
     bool addRoom(const Room &room);
     bool updateRoom(const Room &room);
-    bool deleteRoom(int roomId, QString &errorMessage);
+    bool deleteRoom(int roomId, QString &errorMsg);
     QList<Room> getAvailableRoomsForDates(const QDate &checkIn, const QDate &checkOut, int excludeBookingId = 0);
 
-    // Операции с услугами
     QList<Service> getAllServices();
     bool addService(const Service &service);
     bool updateService(const Service &service);
-    bool deleteService(int serviceId, QString &errorMessage);
+    bool deleteService(int serviceId, QString &errorMsg);
 
-    // Операции с гостями
     QList<Guest> getAllGuests();
     int addOrGetGuest(const Guest &guest);
 
-    // Операции с бронированиями
     QList<Booking> getAllBookings();
     Booking getBookingById(int bookingId);
     bool addBooking(Booking &booking);
@@ -38,16 +35,9 @@ public:
     bool cancelBooking(int bookingId);
     QList<Booking> getGuestHistory(int guestId);
 
-    // Автоматическая актуализация статусов
     void autoCompleteFinishedBookings();
 
 private:
-    explicit DBManager(QObject *parent = nullptr);
-    ~DBManager() override;
-
-    DBManager(const DBManager&) = delete;
-    DBManager& operator=(const DBManager&) = delete;
-
     bool createTables();
     void seedInitialData();
 

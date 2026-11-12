@@ -1,12 +1,7 @@
 #include "dbmanager.h"
 #include <QSqlQuery>
 #include <QSqlError>
-#include <QDebug>
-
-DBManager& DBManager::instance() {
-    static DBManager instance;
-    return instance;
-}
+#include <QDate>
 
 DBManager::DBManager(QObject *parent) : QObject(parent) {}
 
@@ -16,442 +11,414 @@ DBManager::~DBManager() {
     }
 }
 
-bool DBManager::openDatabase() {
-    m_db = QSqlDatabase::addDatabase("QSQLITE");
-    m_db.setDatabaseName("hotel_management.db");
-
-    if (!m_db.open()) {
-        qDebug() << "Ошибка открытия базы данных:" << m_db.lastError().text();
-        return false;
+bool DBManager::openDatabase(const QString &path) {
+    if (QSqlDatabase::contains(QSqlDatabase::defaultConnection)) {
+        m_db = QSqlDatabase::database(QSqlDatabase::defaultConnection);
+    } else {
+        m_db = QSqlDatabase::addDatabase("QSQLITE");
     }
+    m_db.setDatabaseName(path);
 
-    if (!createTables()) {
-        return false;
-    }
+    if (!m_db.open()) return false;
 
-    autoCompleteFinishedBookings();
+    QSqlQuery pragmaQuery(m_db);
+    pragmaQuery.exec("PRAGMA foreign_keys = ON;");
+
+    if (!createTables()) return false;
+
     seedInitialData();
+    autoCompleteFinishedBookings();
     return true;
 }
 
 bool DBManager::createTables() {
-    QSqlQuery query;
-    const QStringList tableQueries = {
+    QSqlQuery q(m_db);
+    bool ok = q.exec(
         "CREATE TABLE IF NOT EXISTS rooms ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, "
         "room_number INTEGER UNIQUE NOT NULL, "
         "type TEXT NOT NULL, "
         "price_per_night REAL NOT NULL, "
-        "status TEXT NOT NULL DEFAULT 'Свободен')",
+        "status TEXT NOT NULL);"
+    );
+    if (!ok) return false;
 
+    ok = q.exec(
+        "CREATE TABLE IF NOT EXISTS services ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "name TEXT NOT NULL, "
+        "price REAL NOT NULL);"
+    );
+    if (!ok) return false;
+
+    ok = q.exec(
         "CREATE TABLE IF NOT EXISTS guests ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, "
         "full_name TEXT NOT NULL, "
         "passport TEXT UNIQUE NOT NULL, "
-        "phone TEXT NOT NULL)",
+        "phone TEXT NOT NULL);"
+    );
+    if (!ok) return false;
 
-        "CREATE TABLE IF NOT EXISTS services ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "name TEXT NOT NULL, "
-        "price REAL NOT NULL)",
-
+    ok = q.exec(
         "CREATE TABLE IF NOT EXISTS bookings ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, "
         "guest_id INTEGER NOT NULL, "
         "room_id INTEGER NOT NULL, "
         "check_in TEXT NOT NULL, "
         "check_out TEXT NOT NULL, "
-        "status TEXT NOT NULL, "
         "total_cost REAL NOT NULL, "
+        "status TEXT NOT NULL, "
         "FOREIGN KEY(guest_id) REFERENCES guests(id), "
-        "FOREIGN KEY(room_id) REFERENCES rooms(id))",
+        "FOREIGN KEY(room_id) REFERENCES rooms(id));"
+    );
+    if (!ok) return false;
 
+    ok = q.exec(
         "CREATE TABLE IF NOT EXISTS booking_services ("
         "booking_id INTEGER NOT NULL, "
         "service_id INTEGER NOT NULL, "
-        "FOREIGN KEY(booking_id) REFERENCES bookings(id), "
-        "FOREIGN KEY(service_id) REFERENCES services(id))"
-    };
-
-    for (const QString &sql : tableQueries) {
-        if (!query.exec(sql)) {
-            qDebug() << "Ошибка создания таблицы:" << query.lastError().text();
-            return false;
-        }
-    }
-    return true;
-}
-
-void DBManager::autoCompleteFinishedBookings() {
-    QSqlQuery query;
-    query.prepare("UPDATE bookings SET status = 'Завершено' "
-                  "WHERE status = 'Активно' AND check_out <= :today");
-    query.bindValue(":today", QDate::currentDate().toString(Qt::ISODate));
-    query.exec();
+        "PRIMARY KEY(booking_id, service_id), "
+        "FOREIGN KEY(booking_id) REFERENCES bookings(id) ON DELETE CASCADE, "
+        "FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE);"
+    );
+    return ok;
 }
 
 void DBManager::seedInitialData() {
-    QSqlQuery query;
-
-    query.exec("SELECT COUNT(*) FROM rooms");
-    if (query.next() && query.value(0).toInt() == 0) {
-        query.exec("INSERT INTO rooms (room_number, type, price_per_night) VALUES "
-                   "(101, 'Стандарт', 2500.0), "
-                   "(102, 'Люкс', 5000.0), "
-                   "(201, 'Президентский', 12000.0), "
-                   "(202, 'Семейный', 4000.0)");
+    QSqlQuery q(m_db);
+    q.exec("SELECT COUNT(*) FROM rooms;");
+    if (q.next() && q.value(0).toInt() == 0) {
+        addRoom({0, 101, "Стандарт", 2500.0, "Свободен"});
+        addRoom({0, 102, "Стандарт", 2500.0, "Свободен"});
+        addRoom({0, 201, "Комфорт", 4000.0, "Свободен"});
+        addRoom({0, 202, "Комфорт", 4000.0, "Свободен"});
+        addRoom({0, 301, "Люкс", 7500.0, "Свободен"});
+        addRoom({0, 401, "Президентский", 15000.0, "Свободен"});
     }
 
-    query.exec("SELECT COUNT(*) FROM services");
-    if (query.next() && query.value(0).toInt() == 0) {
-        query.exec("INSERT INTO services (name, price) VALUES "
-                   "('Завтрак \"Шведский стол\"', 600.0), "
-                   "('Трансфер из аэропорта', 1500.0), "
-                   "('СПА и Сауна', 2000.0), "
-                   "('Услуги прачечной', 500.0)");
+    q.exec("SELECT COUNT(*) FROM services;");
+    if (q.next() && q.value(0).toInt() == 0) {
+        addService({0, "Завтрак (шведский стол)", 600.0});
+        addService({0, "Трансфер из аэропорта", 1500.0});
+        addService({0, "Посещение спа-комплекса", 2000.0});
+        addService({0, "Парковочное место", 400.0});
+        addService({0, "Прачечная и химчистка", 800.0});
     }
-
-    query.exec("SELECT COUNT(*) FROM guests");
-    if (query.next() && query.value(0).toInt() == 0) {
-        query.exec("INSERT INTO guests (full_name, passport, phone) VALUES "
-                   "('Иванов Иван Иванович', '4510 123456', '+7 (999) 111-22-33'), "
-                   "('Петров Петр Сергеевич', '4512 654321', '+7 (999) 444-55-66')");
-    }
-}
-
-static Room parseRoomFromQuery(const QSqlQuery &query) {
-    Room room;
-    room.id = query.value(0).toInt();
-    room.roomNumber = query.value(1).toInt();
-    room.type = query.value(2).toString();
-    room.pricePerNight = query.value(3).toDouble();
-    room.status = query.value(4).toString();
-    return room;
 }
 
 QList<Room> DBManager::getAllRooms() {
-    autoCompleteFinishedBookings();
+    QList<Room> list;
+    QSqlQuery q("SELECT id, room_number, type, price_per_night, status FROM rooms ORDER BY room_number ASC", m_db);
+    while (q.next()) {
+        list.append({
+            q.value(0).toInt(),
+            q.value(1).toInt(),
+            q.value(2).toString(),
+            q.value(3).toDouble(),
+            q.value(4).toString()
+        });
+    }
+    return list;
+}
+
+bool DBManager::addRoom(const Room &room) {
+    QSqlQuery q(m_db);
+    q.prepare("INSERT INTO rooms (room_number, type, price_per_night, status) VALUES (:num, :type, :price, :status);");
+    q.bindValue(":num", room.roomNumber);
+    q.bindValue(":type", room.type);
+    q.bindValue(":price", room.pricePerNight);
+    q.bindValue(":status", room.status);
+    return q.exec();
+}
+
+bool DBManager::updateRoom(const Room &room) {
+    QSqlQuery q(m_db);
+    q.prepare("UPDATE rooms SET room_number = :num, type = :type, price_per_night = :price, status = :status WHERE id = :id;");
+    q.bindValue(":num", room.roomNumber);
+    q.bindValue(":type", room.type);
+    q.bindValue(":price", room.pricePerNight);
+    q.bindValue(":status", room.status);
+    q.bindValue(":id", room.id);
+    return q.exec();
+}
+
+bool DBManager::deleteRoom(int roomId, QString &errorMsg) {
+    QSqlQuery checkQuery(m_db);
+    checkQuery.prepare("SELECT COUNT(*) FROM bookings WHERE room_id = :room_id AND status != 'Отменено';");
+    checkQuery.bindValue(":room_id", roomId);
+    if (checkQuery.exec() && checkQuery.next()) {
+        if (checkQuery.value(0).toInt() > 0) {
+            errorMsg = "Невозможно удалить номер, так как к нему привязаны активные или будущие бронирования!";
+            return false;
+        }
+    }
+    QSqlQuery q(m_db);
+    q.prepare("DELETE FROM rooms WHERE id = :id;");
+    q.bindValue(":id", roomId);
+    return q.exec();
+}
+
+QList<Room> DBManager::getAvailableRoomsForDates(const QDate &checkIn, const QDate &checkOut, int excludeBookingId) {
     QList<Room> rooms;
-    QSqlQuery query("SELECT id, room_number, type, price_per_night, status FROM rooms ORDER BY id ASC");
-    while (query.next()) {
-        rooms.append(parseRoomFromQuery(query));
+    QSqlQuery q(m_db);
+    QString sql =
+        "SELECT id, room_number, type, price_per_night, status FROM rooms "
+        "WHERE status != 'Ремонт' AND id NOT IN ("
+        "    SELECT room_id FROM bookings "
+        "    WHERE status IN ('Подтверждено', 'Проживает') "
+        "      AND check_in < :check_out "
+        "      AND check_out > :check_in ";
+    if (excludeBookingId > 0) {
+        sql += " AND id != :exclude_id";
+    }
+    sql += ") ORDER BY room_number ASC";
+
+    q.prepare(sql);
+    q.bindValue(":check_in", checkIn.toString(Qt::ISODate));
+    q.bindValue(":check_out", checkOut.toString(Qt::ISODate));
+    if (excludeBookingId > 0) {
+        q.bindValue(":exclude_id", excludeBookingId);
+    }
+
+    if (q.exec()) {
+        while (q.next()) {
+            rooms.append({
+                q.value(0).toInt(),
+                q.value(1).toInt(),
+                q.value(2).toString(),
+                q.value(3).toDouble(),
+                q.value(4).toString()
+            });
+        }
     }
     return rooms;
 }
 
-bool DBManager::addRoom(const Room &room) {
-    QSqlQuery query;
-    query.prepare("INSERT INTO rooms (room_number, type, price_per_night, status) "
-                  "VALUES (:number, :type, :price, :status)");
-    query.bindValue(":number", room.roomNumber);
-    query.bindValue(":type", room.type);
-    query.bindValue(":price", room.pricePerNight);
-    query.bindValue(":status", room.status);
-    return query.exec();
-}
-
-bool DBManager::updateRoom(const Room &room) {
-    QSqlQuery query;
-    query.prepare("UPDATE rooms SET room_number = :number, type = :type, price_per_night = :price "
-                  "WHERE id = :id");
-    query.bindValue(":number", room.roomNumber);
-    query.bindValue(":type", room.type);
-    query.bindValue(":price", room.pricePerNight);
-    query.bindValue(":id", room.id);
-    return query.exec();
-}
-
-bool DBManager::deleteRoom(int roomId, QString &errorMessage) {
-    QSqlQuery checkQuery;
-    checkQuery.prepare("SELECT COUNT(*) FROM bookings WHERE room_id = :id AND status = 'Активно'");
-    checkQuery.bindValue(":id", roomId);
-
-    if (checkQuery.exec() && checkQuery.next() && checkQuery.value(0).toInt() > 0) {
-        errorMessage = "Невозможно удалить номер, так как для него есть активные бронирования!";
-        return false;
-    }
-
-    QSqlQuery query;
-    query.prepare("DELETE FROM rooms WHERE id = :id");
-    query.bindValue(":id", roomId);
-    return query.exec();
-}
-
-QList<Room> DBManager::getAvailableRoomsForDates(const QDate &checkIn, const QDate &checkOut, int excludeBookingId) {
-    autoCompleteFinishedBookings();
-    QList<Room> availableRooms;
-
-    QString sql = "SELECT id, room_number, type, price_per_night, status FROM rooms "
-                  "WHERE id NOT IN ("
-                  "  SELECT room_id FROM bookings "
-                  "  WHERE status = 'Активно' AND check_in < :checkOut AND check_out > :checkIn";
-
-    if (excludeBookingId > 0) {
-        sql += " AND id != :excludeBookingId";
-    }
-    sql += ") ORDER BY id ASC";
-
-    QSqlQuery query;
-    query.prepare(sql);
-    query.bindValue(":checkIn", checkIn.toString(Qt::ISODate));
-    query.bindValue(":checkOut", checkOut.toString(Qt::ISODate));
-    if (excludeBookingId > 0) {
-        query.bindValue(":excludeBookingId", excludeBookingId);
-    }
-
-    if (query.exec()) {
-        while (query.next()) {
-            availableRooms.append(parseRoomFromQuery(query));
-        }
-    }
-    return availableRooms;
-}
-
 QList<Service> DBManager::getAllServices() {
-    QList<Service> services;
-    QSqlQuery query("SELECT id, name, price FROM services ORDER BY id ASC");
-    while (query.next()) {
-        Service service;
-        service.id = query.value(0).toInt();
-        service.name = query.value(1).toString();
-        service.price = query.value(2).toDouble();
-        services.append(service);
+    QList<Service> list;
+    QSqlQuery q("SELECT id, name, price FROM services ORDER BY name ASC", m_db);
+    while (q.next()) {
+        list.append({q.value(0).toInt(), q.value(1).toString(), q.value(2).toDouble()});
     }
-    return services;
+    return list;
 }
 
 bool DBManager::addService(const Service &service) {
-    QSqlQuery query;
-    query.prepare("INSERT INTO services (name, price) VALUES (:name, :price)");
-    query.bindValue(":name", service.name);
-    query.bindValue(":price", service.price);
-    return query.exec();
+    QSqlQuery q(m_db);
+    q.prepare("INSERT INTO services (name, price) VALUES (:name, :price);");
+    q.bindValue(":name", service.name);
+    q.bindValue(":price", service.price);
+    return q.exec();
 }
 
 bool DBManager::updateService(const Service &service) {
-    QSqlQuery query;
-    query.prepare("UPDATE services SET name = :name, price = :price WHERE id = :id");
-    query.bindValue(":name", service.name);
-    query.bindValue(":price", service.price);
-    query.bindValue(":id", service.id);
-    return query.exec();
+    QSqlQuery q(m_db);
+    q.prepare("UPDATE services SET name = :name, price = :price WHERE id = :id;");
+    q.bindValue(":name", service.name);
+    q.bindValue(":price", service.price);
+    q.bindValue(":id", service.id);
+    return q.exec();
 }
 
-bool DBManager::deleteService(int serviceId, QString &errorMessage) {
-    m_db.transaction();
-
-    QSqlQuery delServicesQuery;
-    delServicesQuery.prepare("DELETE FROM booking_services WHERE service_id = :id");
-    delServicesQuery.bindValue(":id", serviceId);
-
-    QSqlQuery delQuery;
-    delQuery.prepare("DELETE FROM services WHERE id = :id");
-    delQuery.bindValue(":id", serviceId);
-
-    if (delServicesQuery.exec() && delQuery.exec()) {
-        m_db.commit();
-        return true;
+bool DBManager::deleteService(int serviceId, QString &errorMsg) {
+    QSqlQuery q(m_db);
+    q.prepare("DELETE FROM services WHERE id = :id;");
+    q.bindValue(":id", serviceId);
+    if (!q.exec()) {
+        errorMsg = q.lastError().text();
+        return false;
     }
-
-    m_db.rollback();
-    errorMessage = "Ошибка при удалении услуги из базы данных.";
-    return false;
+    return true;
 }
 
 QList<Guest> DBManager::getAllGuests() {
-    QList<Guest> guests;
-    QSqlQuery query("SELECT id, full_name, passport, phone FROM guests ORDER BY id ASC");
-    while (query.next()) {
-        Guest guest;
-        guest.id = query.value(0).toInt();
-        guest.fullName = query.value(1).toString();
-        guest.passport = query.value(2).toString();
-        guest.phone = query.value(3).toString();
-        guests.append(guest);
+    QList<Guest> list;
+    QSqlQuery q("SELECT id, full_name, passport, phone FROM guests ORDER BY full_name ASC", m_db);
+    while (q.next()) {
+        list.append({q.value(0).toInt(), q.value(1).toString(), q.value(2).toString(), q.value(3).toString()});
     }
-    return guests;
+    return list;
 }
 
 int DBManager::addOrGetGuest(const Guest &guest) {
-    QSqlQuery query;
-    query.prepare("SELECT id FROM guests WHERE passport = :passport");
-    query.bindValue(":passport", guest.passport);
-
-    if (query.exec() && query.next()) {
-        return query.value(0).toInt();
+    QSqlQuery check(m_db);
+    check.prepare("SELECT id FROM guests WHERE passport = :pass;");
+    check.bindValue(":pass", guest.passport);
+    if (check.exec() && check.next()) {
+        return check.value(0).toInt();
     }
-
-    query.prepare("INSERT INTO guests (full_name, passport, phone) VALUES (:name, :passport, :phone)");
-    query.bindValue(":name", guest.fullName);
-    query.bindValue(":passport", guest.passport);
-    query.bindValue(":phone", guest.phone);
-
-    if (query.exec()) {
-        return query.lastInsertId().toInt();
+    QSqlQuery q(m_db);
+    q.prepare("INSERT INTO guests (full_name, passport, phone) VALUES (:name, :pass, :phone);");
+    q.bindValue(":name", guest.fullName);
+    q.bindValue(":pass", guest.passport);
+    q.bindValue(":phone", guest.phone);
+    if (q.exec()) {
+        return q.lastInsertId().toInt();
     }
     return -1;
 }
 
-static Booking parseBookingFromQuery(QSqlQuery &query) {
-    Booking booking;
-    booking.id = query.value(0).toInt();
-    booking.guestId = query.value(1).toInt();
-    booking.roomId = query.value(2).toInt();
-    booking.checkIn = QDate::fromString(query.value(3).toString(), Qt::ISODate);
-    booking.checkOut = QDate::fromString(query.value(4).toString(), Qt::ISODate);
-    booking.status = query.value(5).toString();
-    booking.totalCost = query.value(6).toDouble();
-    booking.guestName = query.value(7).toString();
-    booking.roomNumber = query.value(8).toInt();
-
-    QSqlQuery serviceQuery;
-    serviceQuery.prepare("SELECT service_id FROM booking_services WHERE booking_id = :id");
-    serviceQuery.bindValue(":id", booking.id);
-
-    if (serviceQuery.exec()) {
-        while (serviceQuery.next()) {
-            booking.serviceIds.append(serviceQuery.value(0).toInt());
-        }
-    }
-    return booking;
-}
-
 QList<Booking> DBManager::getAllBookings() {
     autoCompleteFinishedBookings();
-    QList<Booking> bookings;
-    QSqlQuery query(
-        "SELECT b.id, b.guest_id, b.room_id, b.check_in, b.check_out, b.status, b.total_cost, "
-        "g.full_name, r.room_number "
+    QList<Booking> list;
+    QSqlQuery q(
+        "SELECT b.id, b.guest_id, b.room_id, r.room_number, b.check_in, b.check_out, "
+        "b.total_cost, b.status, g.full_name "
         "FROM bookings b "
         "JOIN guests g ON b.guest_id = g.id "
         "JOIN rooms r ON b.room_id = r.id "
-        "WHERE b.status = 'Активно' "
-        "ORDER BY b.check_in ASC"
+        "WHERE b.status IN ('Подтверждено', 'Проживает') "
+        "ORDER BY b.check_in ASC", m_db
     );
-
-    while (query.next()) {
-        bookings.append(parseBookingFromQuery(query));
+    while (q.next()) {
+        Booking b;
+        b.id = q.value(0).toInt();
+        b.guestId = q.value(1).toInt();
+        b.roomId = q.value(2).toInt();
+        b.roomNumber = q.value(3).toInt();
+        b.checkIn = QDate::fromString(q.value(4).toString(), Qt::ISODate);
+        b.checkOut = QDate::fromString(q.value(5).toString(), Qt::ISODate);
+        b.totalCost = q.value(6).toDouble();
+        b.status = q.value(7).toString();
+        b.guestName = q.value(8).toString();
+        list.append(b);
     }
-    return bookings;
+    return list;
 }
 
 Booking DBManager::getBookingById(int bookingId) {
-    QSqlQuery query;
-    query.prepare(
-        "SELECT b.id, b.guest_id, b.room_id, b.check_in, b.check_out, b.status, b.total_cost, "
-        "g.full_name, r.room_number "
+    Booking b;
+    QSqlQuery q(m_db);
+    q.prepare(
+        "SELECT b.id, b.guest_id, b.room_id, r.room_number, b.check_in, b.check_out, "
+        "b.total_cost, b.status, g.full_name "
         "FROM bookings b "
         "JOIN guests g ON b.guest_id = g.id "
         "JOIN rooms r ON b.room_id = r.id "
         "WHERE b.id = :id"
     );
-    query.bindValue(":id", bookingId);
+    q.bindValue(":id", bookingId);
+    if (q.exec() && q.next()) {
+        b.id = q.value(0).toInt();
+        b.guestId = q.value(1).toInt();
+        b.roomId = q.value(2).toInt();
+        b.roomNumber = q.value(3).toInt();
+        b.checkIn = QDate::fromString(q.value(4).toString(), Qt::ISODate);
+        b.checkOut = QDate::fromString(q.value(5).toString(), Qt::ISODate);
+        b.totalCost = q.value(6).toDouble();
+        b.status = q.value(7).toString();
+        b.guestName = q.value(8).toString();
 
-    if (query.exec() && query.next()) {
-        return parseBookingFromQuery(query);
+        QSqlQuery sq(m_db);
+        sq.prepare("SELECT service_id FROM booking_services WHERE booking_id = :bid;");
+        sq.bindValue(":bid", b.id);
+        if (sq.exec()) {
+            while (sq.next()) {
+                b.serviceIds.append(sq.value(0).toInt());
+            }
+        }
     }
-    return Booking();
+    return b;
 }
 
 bool DBManager::addBooking(Booking &booking) {
-    m_db.transaction();
+    QSqlQuery q(m_db);
+    q.prepare(
+        "INSERT INTO bookings (guest_id, room_id, check_in, check_out, total_cost, status) "
+        "VALUES (:gid, :rid, :in, :out, :cost, :status);"
+    );
+    q.bindValue(":gid", booking.guestId);
+    q.bindValue(":rid", booking.roomId);
+    q.bindValue(":in", booking.checkIn.toString(Qt::ISODate));
+    q.bindValue(":out", booking.checkOut.toString(Qt::ISODate));
+    q.bindValue(":cost", booking.totalCost);
+    q.bindValue(":status", booking.status);
 
-    QSqlQuery query;
-    query.prepare("INSERT INTO bookings (guest_id, room_id, check_in, check_out, status, total_cost) "
-                  "VALUES (:guest, :room, :checkIn, :checkOut, :status, :cost)");
-    query.bindValue(":guest", booking.guestId);
-    query.bindValue(":room", booking.roomId);
-    query.bindValue(":checkIn", booking.checkIn.toString(Qt::ISODate));
-    query.bindValue(":checkOut", booking.checkOut.toString(Qt::ISODate));
-    query.bindValue(":status", booking.status);
-    query.bindValue(":cost", booking.totalCost);
+    if (!q.exec()) return false;
 
-    if (!query.exec()) {
-        m_db.rollback();
-        return false;
+    booking.id = q.lastInsertId().toInt();
+
+    for (int sid : booking.serviceIds) {
+        QSqlQuery sq(m_db);
+        sq.prepare("INSERT INTO booking_services (booking_id, service_id) VALUES (:bid, :sid);");
+        sq.bindValue(":bid", booking.id);
+        sq.bindValue(":sid", sid);
+        sq.exec();
     }
-
-    booking.id = query.lastInsertId().toInt();
-
-    for (int serviceId : booking.serviceIds) {
-        QSqlQuery serviceQuery;
-        serviceQuery.prepare("INSERT INTO booking_services (booking_id, service_id) VALUES (:bId, :sId)");
-        serviceQuery.bindValue(":bId", booking.id);
-        serviceQuery.bindValue(":sId", serviceId);
-
-        if (!serviceQuery.exec()) {
-            m_db.rollback();
-            return false;
-        }
-    }
-
-    m_db.commit();
     return true;
 }
 
 bool DBManager::updateBooking(const Booking &booking) {
-    m_db.transaction();
+    QSqlQuery q(m_db);
+    q.prepare(
+        "UPDATE bookings SET room_id = :rid, check_in = :in, check_out = :out, "
+        "total_cost = :cost, status = :status WHERE id = :id;"
+    );
+    q.bindValue(":rid", booking.roomId);
+    q.bindValue(":in", booking.checkIn.toString(Qt::ISODate));
+    q.bindValue(":out", booking.checkOut.toString(Qt::ISODate));
+    q.bindValue(":cost", booking.totalCost);
+    q.bindValue(":status", booking.status);
+    q.bindValue(":id", booking.id);
 
-    QSqlQuery query;
-    query.prepare("UPDATE bookings SET room_id = :room, check_in = :checkIn, check_out = :checkOut, total_cost = :cost "
-                  "WHERE id = :id");
-    query.bindValue(":room", booking.roomId);
-    query.bindValue(":checkIn", booking.checkIn.toString(Qt::ISODate));
-    query.bindValue(":checkOut", booking.checkOut.toString(Qt::ISODate));
-    query.bindValue(":cost", booking.totalCost);
-    query.bindValue(":id", booking.id);
+    if (!q.exec()) return false;
 
-    QSqlQuery delQuery;
-    delQuery.prepare("DELETE FROM booking_services WHERE booking_id = :id");
-    delQuery.bindValue(":id", booking.id);
+    QSqlQuery delServices(m_db);
+    delServices.prepare("DELETE FROM booking_services WHERE booking_id = :bid;");
+    delServices.bindValue(":bid", booking.id);
+    delServices.exec();
 
-    if (!query.exec() || !delQuery.exec()) {
-        m_db.rollback();
-        return false;
+    for (int sid : booking.serviceIds) {
+        QSqlQuery sq(m_db);
+        sq.prepare("INSERT INTO booking_services (booking_id, service_id) VALUES (:bid, :sid);");
+        sq.bindValue(":bid", booking.id);
+        sq.bindValue(":sid", sid);
+        sq.exec();
     }
-
-    for (int serviceId : booking.serviceIds) {
-        QSqlQuery serviceQuery;
-        serviceQuery.prepare("INSERT INTO booking_services (booking_id, service_id) VALUES (:bId, :sId)");
-        serviceQuery.bindValue(":bId", booking.id);
-        serviceQuery.bindValue(":sId", serviceId);
-
-        if (!serviceQuery.exec()) {
-            m_db.rollback();
-            return false;
-        }
-    }
-
-    m_db.commit();
     return true;
 }
 
 bool DBManager::cancelBooking(int bookingId) {
-    QSqlQuery query;
-    query.prepare("UPDATE bookings SET status = 'Отменено' WHERE id = :id");
-    query.bindValue(":id", bookingId);
-    return query.exec();
+    QSqlQuery q(m_db);
+    q.prepare("UPDATE bookings SET status = 'Отменено' WHERE id = :id;");
+    q.bindValue(":id", bookingId);
+    return q.exec();
 }
 
 QList<Booking> DBManager::getGuestHistory(int guestId) {
-    autoCompleteFinishedBookings();
-    QList<Booking> history;
-    QSqlQuery query;
-    query.prepare(
-        "SELECT b.id, b.guest_id, b.room_id, b.check_in, b.check_out, b.status, b.total_cost, "
-        "g.full_name, r.room_number "
+    QList<Booking> list;
+    QSqlQuery q(m_db);
+    q.prepare(
+        "SELECT b.id, b.guest_id, b.room_id, r.room_number, b.check_in, b.check_out, "
+        "b.total_cost, b.status, g.full_name "
         "FROM bookings b "
         "JOIN guests g ON b.guest_id = g.id "
         "JOIN rooms r ON b.room_id = r.id "
-        "WHERE b.guest_id = :guestId "
-        "ORDER BY b.check_in DESC"
+        "WHERE b.guest_id = :gid ORDER BY b.check_in DESC;"
     );
-    query.bindValue(":guestId", guestId);
-
-    if (query.exec()) {
-        while (query.next()) {
-            history.append(parseBookingFromQuery(query));
+    q.bindValue(":gid", guestId);
+    if (q.exec()) {
+        while (q.next()) {
+            Booking b;
+            b.id = q.value(0).toInt();
+            b.guestId = q.value(1).toInt();
+            b.roomId = q.value(2).toInt();
+            b.roomNumber = q.value(3).toInt();
+            b.checkIn = QDate::fromString(q.value(4).toString(), Qt::ISODate);
+            b.checkOut = QDate::fromString(q.value(5).toString(), Qt::ISODate);
+            b.totalCost = q.value(6).toDouble();
+            b.status = q.value(7).toString();
+            b.guestName = q.value(8).toString();
+            list.append(b);
         }
     }
-    return history;
+    return list;
+}
+
+void DBManager::autoCompleteFinishedBookings() {
+    QSqlQuery q(m_db);
+    q.prepare("UPDATE bookings SET status = 'Завершено' WHERE check_out <= :today AND status IN ('Подтверждено', 'Проживает');");
+    q.bindValue(":today", QDate::currentDate().toString(Qt::ISODate));
+    q.exec();
 }

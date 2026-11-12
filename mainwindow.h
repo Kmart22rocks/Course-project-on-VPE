@@ -5,56 +5,53 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QPushButton>
+#include "dbmanager.h"
+#include "currencyapiclient.h"
+#include "networkservice.h"
+#include "analyticswidget.h"
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
-    ~MainWindow() override = default;
+    ~MainWindow() override;
 
 private slots:
-    void openBookingDialog();
-    void editSelectedBooking();
-    void cancelSelectedBooking();
+    void loadRooms();
+    void addRoom();
+    void editRoom();
+    void deleteRoom();
 
-    void addRoomDialog();
-    void editRoomDialog();
-    void deleteSelectedRoom();
+    void loadServices();
+    void addService();
+    void editService();
+    void deleteService();
 
-    void addServiceDialog();
-    void editServiceDialog();
-    void deleteSelectedService();
+    void loadGuests();
+    void viewGuestHistory();
 
-    void showGuestHistory();
+    void loadBookings();
+    void createBooking();
+    void editBooking();
+    void cancelBooking();
+
+    void refreshNetworkAnalytics();
 
 private:
     void setupUI();
-    void loadRooms();
-    void loadBookings();
-    void loadGuests();
-    void loadServices();
 
-    QTabWidget *m_tabWidget;
+    DBManager m_db;
+    HotelTcpServer *m_tcpServer;
+    HotelTcpClient *m_tcpClient;
+    CurrencyApiClient *m_apiClient;
 
+    QTabWidget *m_tabs;
     QTableWidget *m_roomsTable;
-    QTableWidget *m_bookingsTable;
-    QTableWidget *m_guestsTable;
     QTableWidget *m_servicesTable;
-
-    QPushButton *m_addRoomBtn;
-    QPushButton *m_editRoomBtn;
-    QPushButton *m_deleteRoomBtn;
-
-    QPushButton *m_newBookingBtn;
-    QPushButton *m_editBookingBtn;
-    QPushButton *m_cancelBookingBtn;
-
-    QPushButton *m_guestHistoryBtn;
-
-    QPushButton *m_addServiceBtn;
-    QPushButton *m_editServiceBtn;
-    QPushButton *m_deleteServiceBtn;
+    QTableWidget *m_guestsTable;
+    QTableWidget *m_bookingsTable;
+    AnalyticsWidget *m_analyticsWidget;
 };
 
 #endif // MAINWINDOW_H
