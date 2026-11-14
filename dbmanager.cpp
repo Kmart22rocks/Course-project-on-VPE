@@ -26,85 +26,60 @@ bool DBManager::openDatabase(const QString &path) {
 
     if (!createTables()) return false;
 
-    seedInitialData();
     autoCompleteFinishedBookings();
     return true;
 }
 
 bool DBManager::createTables() {
-    QSqlQuery q(m_db);
-    bool ok = q.exec(
-        "CREATE TABLE IF NOT EXISTS rooms ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "room_number INTEGER UNIQUE NOT NULL, "
-        "type TEXT NOT NULL, "
-        "price_per_night REAL NOT NULL, "
-        "status TEXT NOT NULL);"
-    );
-    if (!ok) return false;
+    QSqlQuery query;
 
-    ok = q.exec(
-        "CREATE TABLE IF NOT EXISTS services ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "name TEXT NOT NULL, "
-        "price REAL NOT NULL);"
-    );
-    if (!ok) return false;
-
-    ok = q.exec(
-        "CREATE TABLE IF NOT EXISTS guests ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "full_name TEXT NOT NULL, "
-        "passport TEXT UNIQUE NOT NULL, "
-        "phone TEXT NOT NULL);"
-    );
-    if (!ok) return false;
-
-    ok = q.exec(
-        "CREATE TABLE IF NOT EXISTS bookings ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "guest_id INTEGER NOT NULL, "
-        "room_id INTEGER NOT NULL, "
-        "check_in TEXT NOT NULL, "
-        "check_out TEXT NOT NULL, "
-        "total_cost REAL NOT NULL, "
-        "status TEXT NOT NULL, "
-        "FOREIGN KEY(guest_id) REFERENCES guests(id), "
-        "FOREIGN KEY(room_id) REFERENCES rooms(id));"
-    );
-    if (!ok) return false;
-
-    ok = q.exec(
-        "CREATE TABLE IF NOT EXISTS booking_services ("
-        "booking_id INTEGER NOT NULL, "
-        "service_id INTEGER NOT NULL, "
-        "PRIMARY KEY(booking_id, service_id), "
-        "FOREIGN KEY(booking_id) REFERENCES bookings(id) ON DELETE CASCADE, "
-        "FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE);"
-    );
-    return ok;
-}
-
-void DBManager::seedInitialData() {
-    QSqlQuery q(m_db);
-    q.exec("SELECT COUNT(*) FROM rooms;");
-    if (q.next() && q.value(0).toInt() == 0) {
-        addRoom({0, 101, "Стандарт", 2500.0, "Свободен"});
-        addRoom({0, 102, "Стандарт", 2500.0, "Свободен"});
-        addRoom({0, 201, "Комфорт", 4000.0, "Свободен"});
-        addRoom({0, 202, "Комфорт", 4000.0, "Свободен"});
-        addRoom({0, 301, "Люкс", 7500.0, "Свободен"});
-        addRoom({0, 401, "Президентский", 15000.0, "Свободен"});
+    if (!query.exec("CREATE TABLE IF NOT EXISTS rooms ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "room_number INTEGER UNIQUE NOT NULL, "
+                    "type TEXT NOT NULL, "
+                    "price REAL NOT NULL, "
+                    "status TEXT NOT NULL)")) {
+        return false;
     }
 
-    q.exec("SELECT COUNT(*) FROM services;");
-    if (q.next() && q.value(0).toInt() == 0) {
-        addService({0, "Завтрак (шведский стол)", 600.0});
-        addService({0, "Трансфер из аэропорта", 1500.0});
-        addService({0, "Посещение спа-комплекса", 2000.0});
-        addService({0, "Парковочное место", 400.0});
-        addService({0, "Прачечная и химчистка", 800.0});
+    if (!query.exec("CREATE TABLE IF NOT EXISTS services ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "name TEXT UNIQUE NOT NULL, "
+                    "price REAL NOT NULL)")) {
+        return false;
     }
+
+    if (!query.exec("CREATE TABLE IF NOT EXISTS guests ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "full_name TEXT NOT NULL, "
+                    "passport TEXT UNIQUE NOT NULL, "
+                    "phone TEXT NOT NULL)")) {
+        return false;
+    }
+
+    if (!query.exec("CREATE TABLE IF NOT EXISTS bookings ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "guest_id INTEGER NOT NULL, "
+                    "room_id INTEGER NOT NULL, "
+                    "check_in TEXT NOT NULL, "
+                    "check_out TEXT NOT NULL, "
+                    "status TEXT NOT NULL, "
+                    "total_cost REAL NOT NULL, "
+                    "FOREIGN KEY(guest_id) REFERENCES guests(id) ON DELETE CASCADE, "
+                    "FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE RESTRICT)")) {
+        return false;
+    }
+
+    if (!query.exec("CREATE TABLE IF NOT EXISTS booking_services ("
+                    "booking_id INTEGER NOT NULL, "
+                    "service_id INTEGER NOT NULL, "
+                    "PRIMARY KEY(booking_id, service_id), "
+                    "FOREIGN KEY(booking_id) REFERENCES bookings(id) ON DELETE CASCADE, "
+                    "FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE)")) {
+        return false;
+    }
+
+    return true;
 }
 
 QList<Room> DBManager::getAllRooms() {

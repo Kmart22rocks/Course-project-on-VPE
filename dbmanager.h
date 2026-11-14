@@ -39,7 +39,6 @@ public:
 
 private:
     bool createTables();
-    void seedInitialData();
 
     QSqlDatabase m_db;
 };
