@@ -1,58 +1,93 @@
 #include "analyticswidget.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QLabel>
+#include <QPushButton>
+#include <QTabBar>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QtMath>
+#include <QSqlQuery>
 
 AnalyticsWidget::AnalyticsWidget(QWidget *parent) : QWidget(parent) {
     setStyleSheet("font-size: 11.5pt;");
+
     auto *mainLayout = new QVBoxLayout(this);
-
     auto *topPanel = new QHBoxLayout();
-    m_kpiLabel = new QLabel("Загрузка данных с TCP-сервера...", this);
-    QFont f = m_kpiLabel->font();
-    f.setBold(true);
-    f.setPointSize(10);
-    m_kpiLabel->setFont(f);
 
-    m_currencyLabel = new QLabel("Курсы валют (ЦБ РФ): загрузка...", this);
-    m_refreshBtn = new QPushButton("Обновить по TCP и HTTP API", this);
+    m_kpiLabel = new QLabel("Данные TCP-сервера: ожидание синхронизации...", this);
+    m_kpiLabel->setStyleSheet("font-size: 11.5pt; font-weight: bold;");
+
+    m_ratesLabel = new QLabel("Курсы валют ЦБ РФ (HTTP JSON API): загрузка...", this);
+    m_ratesLabel->setStyleSheet("font-size: 11.5pt; color: #8ad4a4; font-weight: bold;");
 
     topPanel->addWidget(m_kpiLabel);
     topPanel->addStretch();
-    topPanel->addWidget(m_currencyLabel);
-    topPanel->addWidget(m_refreshBtn);
+    topPanel->addWidget(m_ratesLabel);
+
+    auto *switchLayout = new QHBoxLayout();
+    m_chartModeBar = new QTabBar(this);
+    m_chartModeBar->addTab("Выручка по категориям номеров");
+    m_chartModeBar->addTab("Выручка по номерам");
+    m_chartModeBar->setExpanding(false);
+    connect(m_chartModeBar, &QTabBar::currentChanged, this, [this]() {
+        loadRoomRevenueFromDb();
+        update();
+    });
+
+    auto *refreshBtn = new QPushButton("Запросить сводку по TCP и обновить курсы API", this);
+    connect(refreshBtn, &QPushButton::clicked, this, &AnalyticsWidget::refreshRequested);
+
+    switchLayout->addWidget(m_chartModeBar);
+    switchLayout->addStretch();
+    switchLayout->addWidget(refreshBtn);
 
     mainLayout->addLayout(topPanel);
-    mainLayout->addStretch();
-
-    connect(m_refreshBtn, &QPushButton::clicked, this, &AnalyticsWidget::refreshRequested);
+    mainLayout->addLayout(switchLayout);
+    mainLayout->addStretch(1);
 }
 
-void AnalyticsWidget::updateAnalyticsData(int totalRooms,
-                                          int activeBookings,
-                                          int totalGuests,
-                                          const QMap<QString, double> &categoryRevenue) {
+void AnalyticsWidget::loadRoomRevenueFromDb() {
+    m_roomRevenue.clear();
+    QSqlQuery q("SELECT r.room_number, COALESCE(SUM(CASE WHEN b.status != 'Отменено' THEN b.total_cost ELSE 0 END), 0) "
+                "FROM rooms r LEFT JOIN bookings b ON r.id = b.room_id "
+                "GROUP BY r.id, r.room_number ORDER BY r.room_number ASC");
+    while (q.next()) {
+        QString key = QString("№%1").arg(q.value(0).toInt(), 3, 10, QChar(' ')).trimmed();
+        m_roomRevenue.insert(key, q.value(1).toDouble());
+    }
+}
+
+void AnalyticsWidget::updateSummaryData(int totalRooms,
+                                        int activeBookings,
+                                        int totalGuests,
+                                        const QMap<QString, double> &categoryRevenue) {
     m_totalRooms = totalRooms;
     m_activeBookings = activeBookings;
     m_totalGuests = totalGuests;
     m_categoryRevenue = categoryRevenue;
+    loadRoomRevenueFromDb();
 
     m_kpiLabel->setText(
-        QString("TCP-Сервер: Номеров: %1 | Активных броней: %2 | Гостей в базе: %3")
-            .arg(m_totalRooms).arg(m_activeBookings).arg(m_totalGuests)
-    );
+        QString("TCP-сервер | Всего номеров: %1 | Активных броней: %2 | Гостей в БД: %3")
+            .arg(m_totalRooms)
+            .arg(m_activeBookings)
+            .arg(m_totalGuests));
     update();
 }
 
-void AnalyticsWidget::updateCurrencyDisplay(double usdRate, double eurRate, bool fromNetwork) {
-    QString src = fromNetwork ? "HTTP JSON API ЦБ РФ" : "Резервный курс";
-    m_currencyLabel->setText(
-        QString("USD: %1 руб. | EUR: %2 руб. (%3)")
-            .arg(usdRate, 0, 'f', 2)
-            .arg(eurRate, 0, 'f', 2)
-            .arg(src)
-    );
+void AnalyticsWidget::updateCurrencyRates(double usdRate, double eurRate, bool fromNetwork) {
+    m_usdRate = usdRate;
+    m_eurRate = eurRate;
+    m_ratesFromNetwork = fromNetwork;
+
+    QString sourceText = fromNetwork ? "онлайн ЦБ РФ" : "резервный курс";
+    m_ratesLabel->setText(
+        QString("HTTP API (%1): 1 USD = %2 руб. | 1 EUR = %3 руб.")
+            .arg(sourceText)
+            .arg(m_usdRate, 0, 'f', 2)
+            .arg(m_eurRate, 0, 'f', 2));
+    update();
 }
 
 void AnalyticsWidget::paintEvent(QPaintEvent *event) {
@@ -60,7 +95,7 @@ void AnalyticsWidget::paintEvent(QPaintEvent *event) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
 
-    QRect chartRect = rect().adjusted(20, 65, -20, -20);
+    QRect chartRect = rect().adjusted(20, 100, -20, -20);
     if (chartRect.height() < 100 || chartRect.width() < 200) {
         return;
     }
@@ -69,22 +104,26 @@ void AnalyticsWidget::paintEvent(QPaintEvent *event) {
     p.setBrush(QColor("#3b3e45"));
     p.drawRoundedRect(chartRect, 8, 8);
 
+    bool byRoom = (m_chartModeBar && m_chartModeBar->currentIndex() == 1);
+    const QMap<QString, double> &activeData = byRoom ? m_roomRevenue : m_categoryRevenue;
+    QString chartTitle = byRoom
+        ? "Графическая визуализация: Выручка гостиницы по номерам (руб.)"
+        : "Графическая визуализация: Выручка гостиницы по категориям номеров (руб.)";
+
     p.setPen(QColor("#e8eaed"));
     QFont f = font();
     f.setPointSize(13);
     f.setBold(true);
     p.setFont(f);
-    p.drawText(chartRect.adjusted(0, 12, 0, 0),
-               Qt::AlignTop | Qt::AlignHCenter,
-               "Графическая визуализация: Выручка гостиницы по категориям номеров (руб.)");
+    p.drawText(chartRect.adjusted(0, 12, 0, 0), Qt::AlignTop | Qt::AlignHCenter, chartTitle);
 
-    if (m_categoryRevenue.isEmpty()) {
+    if (activeData.isEmpty()) {
         p.drawText(chartRect, Qt::AlignCenter, "Нет данных для построения диаграммы");
         return;
     }
 
     double maxVal = 0.0;
-    for (double v : m_categoryRevenue) {
+    for (double v : activeData) {
         if (v > maxVal) maxVal = v;
     }
     maxVal = (maxVal <= 0.0) ? 10000.0 : qCeil(maxVal / 5000.0) * 5000.0;
@@ -118,9 +157,9 @@ void AnalyticsWidget::paintEvent(QPaintEvent *event) {
     p.drawLine(plotArea.topLeft(), plotArea.bottomLeft());
     p.drawLine(plotArea.bottomLeft(), plotArea.bottomRight());
 
-    int count = m_categoryRevenue.size();
+    int count = activeData.size();
     int stepWidth = plotArea.width() / qMax(1, count);
-    int barWidth = qMin(85, qMax(30, stepWidth / 2));
+    int barWidth = qMin(85, qMax(24, stepWidth / 2));
 
     QList<QColor> barColors = {
         QColor("#5c8bc0"),
@@ -131,7 +170,7 @@ void AnalyticsWidget::paintEvent(QPaintEvent *event) {
     };
 
     int idx = 0;
-    for (auto it = m_categoryRevenue.constBegin(); it != m_categoryRevenue.constEnd(); ++it, ++idx) {
+    for (auto it = activeData.constBegin(); it != activeData.constEnd(); ++it, ++idx) {
         int barHeight = qRound((it.value() / maxVal) * (plotArea.height() - 25));
         int centerX = plotArea.left() + idx * stepWidth + stepWidth / 2;
         QRect barRect(centerX - barWidth / 2, plotArea.bottom() - barHeight, barWidth, barHeight);
