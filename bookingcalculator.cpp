@@ -1,25 +1,26 @@
 #include "bookingcalculator.h"
+#include <QtMath>
 
 int BookingCalculator::calculateNights(const QDate &checkIn, const QDate &checkOut) {
     if (!checkIn.isValid() || !checkOut.isValid()) {
-        return 1;
+        return 0;
     }
-    int nights = checkIn.daysTo(checkOut);
-    return (nights > 0) ? nights : 1;
+    int days = checkIn.daysTo(checkOut);
+    return days > 0 ? days : 0;
 }
 
 double BookingCalculator::calculateServicesCost(const QList<int> &selectedServiceIds,
                                                 const QList<Service> &allServices) {
-    double servicesCost = 0.0;
-    for (int sid : selectedServiceIds) {
+    double servicesTotal = 0.0;
+    for (int id : selectedServiceIds) {
         for (const auto &s : allServices) {
-            if (s.id == sid) {
-                servicesCost += s.price;
+            if (s.id == id) {
+                servicesTotal += s.price;
                 break;
             }
         }
     }
-    return servicesCost;
+    return servicesTotal;
 }
 
 double BookingCalculator::calculateTotalCost(const QDate &checkIn,
@@ -27,25 +28,52 @@ double BookingCalculator::calculateTotalCost(const QDate &checkIn,
                                              double roomPricePerNight,
                                              const QList<int> &selectedServiceIds,
                                              const QList<Service> &allServices) {
-    if (roomPricePerNight < 0.0) {
+    int nights = calculateNights(checkIn, checkOut);
+    if (nights <= 0 || roomPricePerNight < 0.0) {
         return 0.0;
     }
-    int nights = calculateNights(checkIn, checkOut);
-    double servicesCost = calculateServicesCost(selectedServiceIds, allServices);
-    return (nights * roomPricePerNight) + servicesCost;
+    return nights * roomPricePerNight + calculateServicesCost(selectedServiceIds, allServices);
 }
 
 QString BookingCalculator::determineBookingStatus(const QDate &checkIn, const QDate &today) {
-    return (checkIn <= today) ? QStringLiteral("Проживает") : QStringLiteral("Подтверждено");
+    if (!checkIn.isValid() || !today.isValid()) {
+        return "Забронировано";
+    }
+    return (checkIn <= today) ? "Активно" : "Забронировано";
+}
+
+bool BookingCalculator::isRoomAvailableForDates(int roomId,
+                                                const QString &roomStatus,
+                                                const QDate &checkIn,
+                                                const QDate &checkOut,
+                                                const QList<Booking> &bookings,
+                                                int ignoreBookingId) {
+    if (roomStatus == "На ремонте" || !checkIn.isValid() || !checkOut.isValid() || checkIn >= checkOut) {
+        return false;
+    }
+
+    for (const Booking &b : bookings) {
+        if (b.id == ignoreBookingId) {
+            continue;
+        }
+        if (b.roomId == roomId && b.status != "Отменено" && b.status != "Завершено") {
+            if (b.checkIn < checkOut && b.checkOut > checkIn) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 GuestStats BookingCalculator::calculateGuestStats(const QList<Booking> &history) {
     GuestStats stats;
     stats.totalBookings = history.size();
     for (const auto &b : history) {
-        if (b.status != QStringLiteral("Отменено")) {
-            stats.activeOrCompletedVisits++;
+        if (b.status != "Отменено") {
             stats.totalSpent += b.totalCost;
+        }
+        if (b.status == "Завершено" || b.status == "Активно") {
+            stats.activeOrCompletedVisits++;
         }
     }
     return stats;
@@ -53,28 +81,30 @@ GuestStats BookingCalculator::calculateGuestStats(const QList<Booking> &history)
 
 QMap<QString, double> BookingCalculator::calculateRevenueByCategory(const QList<Room> &rooms,
                                                                     const QList<Booking> &bookings) {
-    QMap<int, QString> roomCategoryMap;
-    QMap<QString, double> revenue;
+    QMap<int, QString> roomIdToType;
+    QMap<QString, double> revenueByType;
 
     for (const auto &r : rooms) {
-        roomCategoryMap.insert(r.id, r.type);
-        if (!revenue.contains(r.type)) {
-            revenue.insert(r.type, 0.0);
+        roomIdToType[r.id] = r.type;
+        if (!revenueByType.contains(r.type)) {
+            revenueByType[r.type] = 0.0;
         }
     }
 
     for (const auto &b : bookings) {
-        if (b.status != QStringLiteral("Отменено")) {
-            QString category = roomCategoryMap.value(b.roomId, QStringLiteral("Прочее"));
-            revenue[category] += b.totalCost;
+        if (b.status == "Отменено") {
+            continue;
         }
+        QString type = roomIdToType.value(b.roomId, "Прочее");
+        revenueByType[type] += b.totalCost;
     }
-    return revenue;
+
+    return revenueByType;
 }
 
 double BookingCalculator::convertCurrency(double amountRub, double rate) {
-    if (rate <= 0.0) {
+    if (rate <= 0.0001 || amountRub <= 0.0) {
         return 0.0;
     }
-    return amountRub / rate;
+    return qRound((amountRub / rate) * 100.0) / 100.0;
 }

@@ -1,5 +1,6 @@
 #include "bookingdialog.h"
 #include "bookingcalculator.h"
+#include "guesthistorydialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -13,9 +14,6 @@
 #include <QPushButton>
 #include <QMessageBox>
 #include <QSignalBlocker>
-#include <QTableWidget>
-#include <QHeaderView>
-#include <QSqlQuery>
 
 BookingDialog::BookingDialog(DBManager *db,
                              CurrencyApiClient *apiClient,
@@ -159,23 +157,11 @@ void BookingDialog::loadBookingForEdit() {
                 m_checkOutEdit->setDate(b.checkOut);
             }
 
-            QList<int> sIds = b.serviceIds;
-            if (sIds.isEmpty()) {
-                QSqlQuery q;
-                q.prepare("SELECT service_id FROM booking_services WHERE booking_id = :bid");
-                q.bindValue(":bid", m_editBookingId);
-                if (q.exec()) {
-                    while (q.next()) {
-                        sIds.append(q.value(0).toInt());
-                    }
-                }
-            }
-
             QSignalBlocker b3(m_servicesList);
             for (int i = 0; i < m_servicesList->count(); ++i) {
                 auto *item = m_servicesList->item(i);
                 int sid = item->data(Qt::UserRole).toInt();
-                item->setCheckState(sIds.contains(sid) ? Qt::Checked : Qt::Unchecked);
+                item->setCheckState(b.serviceIds.contains(sid) ? Qt::Checked : Qt::Unchecked);
             }
             break;
         }
@@ -271,47 +257,7 @@ void BookingDialog::updateGuestHistoryPreview(int guestId) {
 
 void BookingDialog::onShowGuestHistory() {
     if (m_selectedGuestId <= 0 || !m_db) return;
-
-    QList<Booking> history = m_db->getGuestHistory(m_selectedGuestId);
-    GuestStats stats = BookingCalculator::calculateGuestStats(history);
-
-    QDialog dlg(this);
-    dlg.setWindowTitle("История бронирований: " + m_nameEdit->text().trimmed());
-    dlg.resize(680, 400);
-
-    auto *layout = new QVBoxLayout(&dlg);
-    auto *summaryLabel = new QLabel(
-        QString("Всего бронирований: %1 | Активных/завершённых визитов: %2 | Общая сумма: %3 руб.")
-            .arg(stats.totalBookings)
-            .arg(stats.activeOrCompletedVisits)
-            .arg(stats.totalSpent, 0, 'f', 2),
-        &dlg);
-    summaryLabel->setStyleSheet("font-weight: bold; font-size: 10.5pt; margin-bottom: 6px;");
-    layout->addWidget(summaryLabel);
-
-    auto *table = new QTableWidget(&dlg);
-    table->setColumnCount(6);
-    table->setHorizontalHeaderLabels({"ID", "Номер", "Дата заезда", "Дата выезда", "Стоимость (руб.)", "Статус"});
-    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    table->setRowCount(history.size());
-
-    for (int i = 0; i < history.size(); ++i) {
-        const Booking &b = history[i];
-        table->setItem(i, 0, new QTableWidgetItem(QString::number(b.id)));
-        table->setItem(i, 1, new QTableWidgetItem(QString("%1").arg(b.roomNumber)));
-        table->setItem(i, 2, new QTableWidgetItem(b.checkIn.toString("dd.MM.yyyy")));
-        table->setItem(i, 3, new QTableWidgetItem(b.checkOut.toString("dd.MM.yyyy")));
-        table->setItem(i, 4, new QTableWidgetItem(QString::number(b.totalCost, 'f', 2)));
-        table->setItem(i, 5, new QTableWidgetItem(b.status));
-    }
-    layout->addWidget(table);
-
-    auto *closeBtn = new QPushButton("Закрыть", &dlg);
-    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
-    layout->addWidget(closeBtn);
-
+    GuestHistoryDialog dlg(getGuestData(), m_db, this);
     dlg.exec();
 }
 
@@ -352,24 +298,8 @@ void BookingDialog::updateAvailableRooms() {
     int preselectedIdx = -1;
 
     for (const Room &r : rooms) {
-        if (r.status == "На ремонте" && r.id != m_targetRoomId) {
-            continue;
-        }
-
-        bool available = true;
-        for (const Booking &b : bookings) {
-            if (b.id == m_editBookingId) {
-                continue;
-            }
-            if (b.roomId == r.id && b.status != "Отменено" && b.status != "Завершено") {
-                if (b.checkIn < checkOut && b.checkOut > checkIn) {
-                    available = false;
-                    break;
-                }
-            }
-        }
-
-        if (available) {
+        QString effectiveStatus = (r.id == m_targetRoomId) ? "Свободен" : r.status;
+        if (BookingCalculator::isRoomAvailableForDates(r.id, effectiveStatus, checkIn, checkOut, bookings, m_editBookingId)) {
             QString text = QString("№%1 | %2 | %3 руб./сут.")
                                .arg(r.roomNumber)
                                .arg(r.type)
